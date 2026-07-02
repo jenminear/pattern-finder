@@ -184,6 +184,9 @@ testem.log
 # System files
 .DS_Store
 Thumbs.db
+
+# Local dev DB (SQLite stand-in for Cloud SQL Postgres)
+pattern_finder_local.db
 *.vscode*
 
 # ADK
