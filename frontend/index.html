@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pattern Finder</title>
+<link rel="stylesheet" href="app.css" />
+<script type="importmap">
+{
+  "imports": {
+    "lit": "https://esm.sh/lit@3",
+    "@a2a-js/sdk/client": "https://esm.sh/@a2a-js/sdk@0.3.13/client",
+    "uuid": "https://esm.sh/uuid@11"
+  }
+}
+</script>
+</head>
+<body>
+<header>
+  <h1>Pattern Finder</h1>
+  <p class="tagline">Give it a scenario. It'll guess the consequence, learn from the answer, and reuse what it learns.</p>
+</header>
+
+<main>
+  <section class="panel" id="scenario-panel">
+    <h2>The Scenario</h2>
+    <div id="input-rows"></div>
+
+    <div class="field">
+      <label for="effort-dial">
+        How hard should it try? <span id="effort-dial-label">Balanced</span>
+      </label>
+      <input type="range" id="effort-dial" min="0" max="1" step="0.01" value="0.5" />
+      <div class="range-endpoints">
+        <span>Quick &amp; economical</span>
+        <span>Thorough &amp; precise</span>
+      </div>
+    </div>
+
+    <button id="guess-btn" type="button">Guess the Consequence</button>
+
+    <div class="field">
+      <label>Agent's estimate</label>
+      <div id="estimate-box" class="estimate-box">&mdash;</div>
+    </div>
+
+    <agent-reasoning-card id="reasoning-card" hidden></agent-reasoning-card>
+
+    <div class="field" id="correct-answer-field" hidden>
+      <label for="correct-consequence">What's the correct consequence?</label>
+      <input type="text" id="correct-consequence" maxlength="300" />
+      <button id="submit-answer-btn" type="button">Submit Correct Answer</button>
+    </div>
+
+    <pattern-captured-card id="captured-card" hidden></pattern-captured-card>
+
+    <div class="field">
+      <button id="new-scenario-btn" type="button">Start a New Scenario</button>
+    </div>
+  </section>
+
+  <section class="panel" id="scorecard-panel">
+    <h2>Scorecard</h2>
+    <table id="scorecard">
+      <thead>
+        <tr><th></th><th>Count</th><th>%</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Scenarios processed</td><td id="sc-processed">0</td><td>&mdash;</td></tr>
+        <tr><td>"I don't know"</td><td id="sc-dontknow">0</td><td id="sc-dontknow-pct">&mdash;</td></tr>
+        <tr><td>Correct</td><td id="sc-correct">0</td><td id="sc-correct-pct">&mdash;</td></tr>
+        <tr><td>Incorrect</td><td id="sc-incorrect">0</td><td id="sc-incorrect-pct">&mdash;</td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+
+<script type="module" src="a2ui-surfaces.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

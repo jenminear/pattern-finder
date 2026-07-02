@@ -14,17 +14,19 @@
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import google.auth
 from a2a.server.apps import A2AFastAPIApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
-from a2a.types import AgentCapabilities, AgentCard
+from a2a.types import AgentCapabilities, AgentCard, AgentExtension
 from a2a.utils.constants import (
     AGENT_CARD_WELL_KNOWN_PATH,
     EXTENDED_AGENT_CARD_PATH,
 )
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
 from google.adk.artifacts import GcsArtifactService, InMemoryArtifactService
@@ -60,13 +62,24 @@ request_handler = DefaultRequestHandler(
 )
 
 A2A_RPC_PATH = f"/a2a/{adk_app.name}"
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+
+# A2UI extension (.agents-cli-spec.md, "UI Surfaces (A2UI)"): declares that
+# this agent's responses may include A2UI DataParts for the two catalog IDs
+# below, so an A2UI-aware client knows to render them as UI surfaces instead
+# of raw JSON. See app/agent.py for where those DataParts get attached.
+A2UI_EXTENSION = AgentExtension(
+    uri="https://a2ui.org/a2a-extension/a2ui/v0.8",
+    description="Agent Reasoning and Pattern Captured UI surfaces",
+    params={"supportedCatalogIds": ["agent_reasoning", "pattern_captured"]},
+)
 
 
 async def build_dynamic_agent_card() -> AgentCard:
     """Builds the Agent Card dynamically from the root_agent."""
     agent_card_builder = AgentCardBuilder(
         agent=adk_app.root_agent,
-        capabilities=AgentCapabilities(streaming=True),
+        capabilities=AgentCapabilities(streaming=True, extensions=[A2UI_EXTENSION]),
         rpc_url=f"{os.getenv('APP_URL', 'http://0.0.0.0:8000')}{A2A_RPC_PATH}",
         agent_version=os.getenv("AGENT_VERSION", "0.1.0"),
     )
@@ -84,6 +97,12 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         rpc_url=A2A_RPC_PATH,
         extended_agent_card_url=f"{A2A_RPC_PATH}{EXTENDED_AGENT_CARD_PATH}",
     )
+    # Mounted last so it's a fallback catch-all at "/" -- the A2A routes
+    # above (and /feedback) still take precedence since they're more specific.
+    if FRONTEND_DIR.exists():
+        app_instance.mount(
+            "/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend"
+        )
     yield
 
 
