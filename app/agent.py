@@ -372,6 +372,16 @@ db_mcp_toolset = McpToolset(
             command="uv",
             args=["run", "python", "-m", "app.mcp_server.server"],
             cwd=str(_PROJECT_ROOT),
+            # The mcp client's default (env=None) only forwards a small
+            # allowlist of "safe" vars (see mcp.client.stdio.
+            # get_default_environment) -- NOT the full parent environment.
+            # Without this, PATTERN_FINDER_DB_URL (and in production, any
+            # Cloud SQL connection vars) silently never reach the
+            # subprocess, which then falls back to the default local
+            # SQLite path instead of the configured DB. Since this
+            # subprocess is our own trusted MCP server, not a third-party
+            # one, forwarding the full environment is safe here.
+            env=dict(os.environ),
         ),
     ),
 )

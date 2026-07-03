@@ -5,10 +5,28 @@ This directory contains evaluation datasets for testing agent behavior.
 ## Running Evaluations
 
 ### Default Dataset
+
+`basic-dataset.json`'s `exact_pattern_match_applies_correctly` and
+`insufficient_data_stays_honest` cases depend on DB state that isn't there
+on a fresh checkout -- seed it once first (idempotent, safe to rerun):
+
 ```bash
-# Generate traces using the default dataset
-agents-cli eval generate
-agents-cli eval grade
+uv run python tests/eval/seed_eval_data.py
+```
+
+**`agents-cli eval generate` doesn't work with this agent as of CLI 0.5.0** --
+it delegates to Vertex AI's managed inference (`vertexai._genai.evals.
+run_inference`), which builds its `AgentConfig` by calling
+`inspect.signature()` on every item in `tools`. That fails for `McpToolset`
+(a toolset, not a single callable) with "McpToolset object is not a
+callable object" -- confirmed, not a config mistake on our end. Worth
+re-checking against a newer CLI version later. Until then, generate traces
+locally through ADK's own Runner instead (same trace schema `eval grade`
+expects, just produced without the broken managed-inference step):
+
+```bash
+uv run python tests/eval/generate_traces_local.py
+agents-cli eval grade --traces artifacts/traces/local_traces.json --config tests/eval/eval_config.yaml
 ```
 
 ### Custom Dataset

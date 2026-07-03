@@ -43,9 +43,20 @@ from requests.exceptions import RequestException
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BASE_URL = "http://127.0.0.1:8000"
-A2A_RPC_URL = BASE_URL + "/a2a/app/"
-AGENT_CARD_URL = A2A_RPC_URL + ".well-known/agent-card.json"
+# 8000/8001/8002 are all liable to be occupied on the dev machine this was
+# built on (an unrelated long-running process, the local preview server --
+# see .claude/launch.json at the workspace root -- and other concurrent
+# project work, respectively). Picked an uncommon port to sidestep the
+# whole class of conflict rather than chase specific occupied ports.
+_TEST_PORT = 8020
+BASE_URL = f"http://127.0.0.1:{_TEST_PORT}"
+# Path must match the actual app name (adk_app.name = "pattern-finder" in
+# app/agent.py), not the scaffold's generic "app" placeholder. No trailing
+# slash on the RPC URL: the registered POST route is exact-path
+# (A2A_RPC_PATH in fast_api_app.py has none either) -- a trailing slash
+# here 405'd instead of routing (confirmed empirically).
+A2A_RPC_URL = BASE_URL + "/a2a/pattern-finder"
+AGENT_CARD_URL = A2A_RPC_URL + "/.well-known/agent-card.json"
 FEEDBACK_URL = BASE_URL + "/feedback"
 
 HEADERS = {"Content-Type": "application/json"}
@@ -67,10 +78,17 @@ def start_server() -> subprocess.Popen[str]:
         "--host",
         "0.0.0.0",
         "--port",
-        "8000",
+        str(_TEST_PORT),
     ]
     env = os.environ.copy()
     env["INTEGRATION_TEST"] = "TRUE"
+    # Must match _TEST_PORT -- the agent card's declared rpc_url is built
+    # from this (see app/fast_api_app.py:build_dynamic_agent_card), and a
+    # mismatch here breaks A2A client discovery (same CORS/wrong-URL class
+    # of bug hit earlier wiring up the frontend against 127.0.0.1 vs
+    # localhost -- keeping this in the subprocess env rather than relying
+    # on .env avoids that fragility).
+    env["APP_URL"] = BASE_URL
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,

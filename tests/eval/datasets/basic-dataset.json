@@ -1,17 +1,36 @@
 {
   "eval_cases": [
     {
-      "eval_case_id": "greeting",
+      "eval_case_id": "no_history_says_dont_know",
       "prompt": {
         "role": "user",
-        "parts": [{"text": "Hello, what can you help me with?"}]
+        "parts": [
+          {
+            "text": "EFFORT_DIAL: 0.5\nPHASE: guess\nlabel=eval_unseen_p value=7\nlabel=eval_unseen_q value=11"
+          }
+        ]
       }
     },
     {
-      "eval_case_id": "capability_query",
+      "eval_case_id": "exact_pattern_match_applies_correctly",
       "prompt": {
         "role": "user",
-        "parts": [{"text": "What tools do you have available?"}]
+        "parts": [
+          {
+            "text": "EFFORT_DIAL: 0.5\nPHASE: guess\nlabel=eval_side_a value=10\nlabel=eval_side_b value=3"
+          }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "insufficient_data_stays_honest",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "EFFORT_DIAL: 0.5\nPHASE: guess\nlabel=eval_trial_x value=8\nlabel=eval_trial_y value=1"
+          }
+        ]
       }
     }
   ]

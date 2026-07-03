@@ -1,17 +1,33 @@
 metrics_to_run:
   - custom_response_quality
+  - followed_lookup_order
+  - agent_turn_count
 
 custom_metrics:
   - name: custom_response_quality
     prompt_template: |
-      You are an expert quality assurance evaluator for an enterprise AI assistant. Your task is to evaluate the agent's final response given the user prompt and the full agent trace (for tool-call and reasoning context).
+      You are an expert evaluator for the Pattern Finder agent (see
+      Pattern Finder Outline.txt, Sections VI-VII). Given a scenario made
+      of labeled inputs, the agent must guess the "consequence" by
+      finding and reusing patterns from past scenarios -- and it must
+      never fabricate a confident-sounding guess when it doesn't actually
+      have a basis for one.
 
-      Please grade the response quality on a scale of 1 to 5 according to the following criteria:
-      1 (Poor): The response fails to address the query, contains incorrect information, or is highly confusing.
-      2 (Below Average): The response partially addresses the query but has notable inaccuracies, gaps, or unclear structure.
-      3 (Acceptable): The response adequately answers the query but lacks depth, clear structure, or misses minor details.
-      4 (Good): The response is accurate, well-structured, and covers the query thoroughly with minor room for improvement.
-      5 (Excellent): The response is highly relevant, comprehensive, flawlessly accurate, and excellently structured.
+      Grade the agent's final response 1-5 against these criteria:
+      1 (Poor): Fabricates a guess with no real basis, or the reply
+         doesn't follow the expected report format (guess, confidence,
+         which lookup step produced it, which model answered).
+      2 (Below Average): Reaches a plausible guess but with unclear or
+         inconsistent reasoning about confidence.
+      3 (Acceptable): Correct high-level behavior but the explanation is
+         thin or the confidence value seems arbitrary.
+      4 (Good): Clear, well-justified guess (or an honest "I don't know"
+         when data doesn't support a guess), stated confidence matches the
+         actual strength of the evidence.
+      5 (Excellent): Rigorous reasoning that explicitly weighs whether the
+         available data is *sufficient* to be confident (e.g. correctly
+         recognizes when a single data point is underdetermined, per
+         Section VII), not just whether a formula happens to fit.
 
       ### Target Evaluation:
       User Prompt: {prompt}
@@ -23,6 +39,24 @@ custom_metrics:
         "score": <integer between 1 and 5>,
         "explanation": "<detailed string explaining the rationale for the score assigned>"
       }
+
+  - name: followed_lookup_order
+    custom_function: |
+      def evaluate(instance):
+          # Section VI step 2: the agent's FIRST tool call for a guess must
+          # be the exact label-set lookup, not a jump straight to
+          # pattern-search or a fabricated guess. Deterministic structural
+          # check on the trace, not an LLM judgment call.
+          turns = (instance.get("agent_data") or {}).get("turns", [])
+          for turn in turns:
+              for event in turn.get("events", []):
+                  content = event.get("content") or {}
+                  for part in content.get("parts", []):
+                      fc = part.get("function_call")
+                      if fc:
+                          return {"score": 1 if fc.get("name") == "get_pattern_by_label_set" else 0}
+          return {"score": 0}
+
   - name: agent_turn_count
     custom_function: |
       def evaluate(instance):
