@@ -224,3 +224,64 @@ class TestLearnPhaseContent:
         assert db_ops.get_pattern_by_label_set(["li_a", "li_b"]) is None
         scenarios = db_ops.get_scenarios_by_label_set(["li_a", "li_b"])
         assert scenarios[0]["pattern_id"] == pid
+
+
+class TestWritePatternDescriptionPrompt:
+    # Regression coverage for a real bug: a bare "xN" rule (no operator --
+    # an identity/copy rule meaning "output = that one input's value
+    # verbatim") was described by the LLM as "the mathematical double of
+    # their corresponding index", because the prompt gave it the rule
+    # string with zero explanation of the x0/x1/... convention. Doesn't
+    # call the real LLM (that's covered by tests/integration/test_agent.py)
+    # -- just asserts the prompt actually carries the disambiguating
+    # context, since that's the part that regresses silently.
+    @pytest.mark.asyncio
+    async def test_prompt_explains_bare_reference_is_not_arithmetic(self, agent_module):
+        captured = {}
+
+        async def fake_narrow_llm_call(prompt, model):
+            captured["prompt"] = prompt
+            return "a description"
+
+        # app.agent is a cached module (re-imported across tests via the
+        # agent_module fixture returns the SAME object), so save/restore
+        # rather than delete the attribute.
+        original = agent_module._narrow_llm_call
+        agent_module._narrow_llm_call = fake_narrow_llm_call
+        try:
+            await agent_module._write_pattern_description("x2", "some-model")
+        finally:
+            agent_module._narrow_llm_call = original
+
+        prompt = captured["prompt"]
+        assert "not exponents or coefficients" in prompt
+        assert "does NOT mean" in prompt
+        assert "identity/copy rule" in prompt
+        assert "The confirmed rule/logic: x2" in prompt
+
+
+class TestEffortTierThinkingConfig:
+    # Regression test for a real bug found live: gemini-2.5-pro (Max
+    # Quality's model) 400s on thinking_level entirely, and even on
+    # thinking_budget=0 (it can't disable thinking) -- confirmed against
+    # the real API, not assumed. Each tier must set EXACTLY ONE of
+    # thinking_budget/thinking_level, matching what its own model
+    # actually supports (gemini-2.5-pro: budget only; the gemini-3.x
+    # models used by the other two tiers accept both, confirmed live, but
+    # the project's convention is still one field per tier).
+    def test_each_tier_sets_exactly_one_thinking_field(self, agent_module):
+        for tier in (
+            agent_module._ECONOMY,
+            agent_module._BALANCED,
+            agent_module._MAX_QUALITY,
+        ):
+            has_budget = tier.thinking_budget is not None
+            has_level = tier.thinking_level is not None
+            assert has_budget != has_level, f"{tier.name}: must set exactly one"
+
+    def test_max_quality_uses_budget_not_level(self, agent_module):
+        # The specific case that broke: gemini-2.5-pro rejects
+        # thinking_level outright.
+        assert agent_module._MAX_QUALITY.thinking_level is None
+        assert agent_module._MAX_QUALITY.thinking_budget is not None
+        assert agent_module._MAX_QUALITY.thinking_budget > 0  # 2.5-pro can't use 0 either

@@ -149,9 +149,15 @@ _BALANCED = EffortTier(
 )
 _MAX_QUALITY = EffortTier(
     name="Max Quality",
+    # gemini-2.5-pro (unlike the 3.x models used by the other two tiers)
+    # only supports the older thinking_budget field, not thinking_level --
+    # confirmed live (it 400s on thinking_level, and even on
+    # thinking_budget=0, since 2.5-pro can't disable thinking entirely).
+    # 32768 is that model's max budget, the closest explicit equivalent to
+    # "HIGH".
     model="gemini-2.5-pro",
-    thinking_budget=None,
-    thinking_level="HIGH",
+    thinking_budget=32768,
+    thinking_level=None,
     search_persistence=(
         "Thoroughly explore freeform alternative approaches and extra "
         "sandboxed regression attempts before giving up."
@@ -545,6 +551,16 @@ async def _write_pattern_description(rule: str, model: str) -> str:
         "mention any specific label names -- describe the STRUCTURE of the "
         'pattern only, e.g. "data fit a parabolic pattern when labels are '
         'sorted in ascending order".\n\n'
+        "Context on notation: x0, x1, x2, ... are VARIABLE REFERENCES to "
+        "the scenario's labeled inputs, positionally sorted alphabetically "
+        "by label name (x0 = first alphabetically, x1 = second, etc.) -- "
+        "they are not exponents or coefficients. A rule that is a bare "
+        "reference like \"x2\" with no operator means the output directly "
+        "copies/equals that one specific input's value verbatim (an "
+        "identity/copy rule, e.g. \"output = 5\" when x2=5, or "
+        '"output = \'cherry\'" when x2=\'cherry\') -- it does NOT mean '
+        '"x squared" or "x times 2". Only treat it as arithmetic if it '
+        "actually contains an operator (+, -, *, /, **, %).\n\n"
         f"The confirmed rule/logic: {rule}\n\n"
         "Reply with ONLY the one-sentence description, nothing else."
     )
