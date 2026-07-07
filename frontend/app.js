@@ -28,6 +28,7 @@ function effortTierLabel(dial) {
 const inputRowsEl = document.getElementById("input-rows");
 const effortDialEl = document.getElementById("effort-dial");
 const effortDialLabelEl = document.getElementById("effort-dial-label");
+const emitUiToggleEl = document.getElementById("emit-ui-toggle");
 const guessBtn = document.getElementById("guess-btn");
 const estimateBoxEl = document.getElementById("estimate-box");
 const reasoningCardEl = document.getElementById("reasoning-card");
@@ -64,7 +65,12 @@ function getClient() {
 }
 
 let sessionContextId = null;
-let lastGuessText = null;
+// Everything the Learn-phase message needs to echo back, since the
+// deterministic backend orchestrator has no access to "what the agent was
+// thinking" during the prior guess turn -- see app/agent.py's module
+// docstring. Populated from the Agent Reasoning card's payload.
+let pendingScenario = null; // [[label, value], ...] from the guess turn
+let pendingGuess = null; // { guess, matchedVia, patternId, rule } or null
 
 function collectInputs() {
   const rows = [...inputRowsEl.querySelectorAll(".input-row")];
@@ -77,9 +83,14 @@ function collectInputs() {
   return pairs;
 }
 
-function buildMessageText(phaseLine) {
+function scenarioLines(pairs) {
+  return pairs.map(([label, value]) => `label=${label} value=${value}`);
+}
+
+function protocolHeader() {
   const dial = effortDialEl.value;
-  return `EFFORT_DIAL: ${dial}\n${phaseLine}`;
+  const emitUi = emitUiToggleEl.checked ? "on" : "off";
+  return `EFFORT_DIAL: ${dial}\nEMIT_UI: ${emitUi}`;
 }
 
 // Extracts (text, dataParts[]) from whatever shape the streamed/awaited A2A
@@ -155,8 +166,9 @@ guessBtn.addEventListener("click", async () => {
   }
 
   sessionContextId = null; // new scenario -> new A2A context
-  const lines = pairs.map(([label, value]) => `label=${label} value=${value}`);
-  const messageText = buildMessageText(`PHASE: guess\n${lines.join("\n")}`);
+  pendingScenario = pairs;
+  pendingGuess = null;
+  const messageText = `${protocolHeader()}\nPHASE: guess\n${scenarioLines(pairs).join("\n")}`;
 
   setBusy(true, guessBtn);
   estimateBoxEl.textContent = "...";
@@ -169,14 +181,20 @@ guessBtn.addEventListener("click", async () => {
     const reasoning = findSurface(dataParts, "agent_reasoning");
 
     if (reasoning) {
-      lastGuessText = reasoning.guess ?? null;
+      pendingGuess = {
+        guess: reasoning.guess ?? null,
+        matchedVia: reasoning.matched_via ?? null,
+        patternId: reasoning.pattern_id ?? null,
+        rule: reasoning.rule ?? null,
+      };
       estimateBoxEl.textContent = reasoning.guess ?? "I don't know";
       reasoningCardEl.payload = reasoning;
       reasoningCardEl.hidden = false;
     } else {
-      // Fall back to the raw text reply if the DataPart didn't arrive for
-      // some reason -- still usable, just not structured.
-      lastGuessText = text.trim();
+      // Fall back to the raw text reply if the DataPart didn't arrive
+      // (e.g. "Show agent reasoning details" is off) -- still usable, the
+      // Learn-phase turn just won't be able to attribute a pattern precisely.
+      pendingGuess = { guess: text.trim(), matchedVia: null, patternId: null, rule: null };
       estimateBoxEl.textContent = text || "(no response)";
     }
     correctAnswerFieldEl.hidden = false;
@@ -196,12 +214,23 @@ submitAnswerBtn.addEventListener("click", async () => {
     alert("Enter the correct consequence.");
     return;
   }
-  if (!sessionContextId) {
+  if (!sessionContextId || !pendingScenario) {
     alert("Guess a scenario first.");
     return;
   }
 
-  const messageText = buildMessageText(`PHASE: learn\nCORRECT_CONSEQUENCE: ${correct}`);
+  const lines = [
+    protocolHeader(),
+    "PHASE: learn",
+    `CORRECT_CONSEQUENCE: ${correct}`,
+    ...scenarioLines(pendingScenario), // deterministic backend re-derives insert_scenario from these
+  ];
+  if (pendingGuess?.guess != null) lines.push(`GUESS_VALUE: ${pendingGuess.guess}`);
+  if (pendingGuess?.matchedVia) lines.push(`MATCHED_VIA: ${pendingGuess.matchedVia}`);
+  if (pendingGuess?.patternId != null) lines.push(`PATTERN_ID: ${pendingGuess.patternId}`);
+  if (pendingGuess?.rule) lines.push(`APPLIED_RULE: ${pendingGuess.rule}`);
+  const messageText = lines.join("\n");
+
   setBusy(true, submitAnswerBtn);
 
   try {
@@ -209,17 +238,18 @@ submitAnswerBtn.addEventListener("click", async () => {
     const captured = findSurface(dataParts, "pattern_captured");
 
     scorecard.processed += 1;
-    const guessNorm = (lastGuessText || "").trim().toLowerCase();
-    if (!guessNorm || guessNorm.includes("i don't know") || guessNorm.includes("i dont know")) {
+    const guessNorm = (pendingGuess?.guess || "").trim().toLowerCase();
+    const isDontKnow = !guessNorm || guessNorm.includes("don't know") || guessNorm.includes("dont know");
+    if (isDontKnow) {
       scorecard.dontKnow += 1;
-    } else if (guessNorm === correct.toLowerCase()) {
+    } else if (captured?.matched) {
       scorecard.correct += 1;
     } else {
       scorecard.incorrect += 1;
     }
     renderScorecard();
 
-    if (captured) {
+    if (captured && captured.action && captured.action !== "none") {
       capturedCardEl.payload = captured;
       capturedCardEl.hidden = false;
     }
@@ -235,7 +265,8 @@ submitAnswerBtn.addEventListener("click", async () => {
 // --- Reset ---------------------------------------------------------------
 newScenarioBtn.addEventListener("click", () => {
   sessionContextId = null;
-  lastGuessText = null;
+  pendingScenario = null;
+  pendingGuess = null;
   inputRowsEl.querySelectorAll("input").forEach((el) => (el.value = ""));
   correctConsequenceEl.value = "";
   estimateBoxEl.textContent = "—";

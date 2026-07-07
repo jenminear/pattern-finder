@@ -180,6 +180,22 @@ def digit_reverse(n):
     return int(s[::-1]) * (1 if n >= 0 else -1)
 
 
+SINGLE_VARIABLE_TRANSFORMS = {
+    "x": lambda x: x,
+    "-x": lambda x: -x,
+    "x^2": lambda x: x ** 2,
+    "digit_sum(x)": lambda x: digit_sum(x),
+    "digit_product(x)": lambda x: digit_product(x),
+    "digit_reverse(x)": lambda x: digit_reverse(x),
+    "x - digit_sum(x)": lambda x: x - digit_sum(x),
+    "digit_sum(x) - x": lambda x: digit_sum(x) - x,
+    "digit_product(x) - digit_sum(x)": lambda x: digit_product(x) - digit_sum(x),
+    "100 - x": lambda x: 100 - x,
+    "x mod 100": lambda x: x % 100,
+    "x mod 97": lambda x: x % 97,  # arbitrary prime, cheap to test
+}
+
+
 def try_single_variable_transforms(data):
     """
     For single-input puzzles, try a battery of named scalar transforms and
@@ -189,23 +205,8 @@ def try_single_variable_transforms(data):
     if len(rows) < 2:
         return []
 
-    candidates = {
-        "x": lambda x: x,
-        "-x": lambda x: -x,
-        "x^2": lambda x: x ** 2,
-        "digit_sum(x)": lambda x: digit_sum(x),
-        "digit_product(x)": lambda x: digit_product(x),
-        "digit_reverse(x)": lambda x: digit_reverse(x),
-        "x - digit_sum(x)": lambda x: x - digit_sum(x),
-        "digit_sum(x) - x": lambda x: digit_sum(x) - x,
-        "digit_product(x) - digit_sum(x)": lambda x: digit_product(x) - digit_sum(x),
-        "100 - x": lambda x: 100 - x,
-        "x mod 100": lambda x: x % 100,
-        "x mod 97": lambda x: x % 97,  # arbitrary prime, cheap to test
-    }
-
     hits = []
-    for label, fn in candidates.items():
+    for label, fn in SINGLE_VARIABLE_TRANSFORMS.items():
         try:
             if all(fn(x) == out for x, out in rows):
                 hits.append(label)
@@ -340,3 +341,76 @@ def analyze(data, degree=2):
         print("\n[3] Polynomial fit: not enough complete rows to attempt.")
 
     print()
+
+
+# ---------------------------------------------------------------------------
+# 5. STRUCTURED RESULT + APPLY (deterministic use, no LLM/printing)
+# ---------------------------------------------------------------------------
+#
+# find_pattern()/apply_pattern() let the deterministic Guess-phase
+# pre-check (see app/agent.py) call this script directly -- no LLM, no
+# sandboxed code execution -- and only ever auto-answer with a pattern
+# that clears the SAME trustworthiness bar analyze()'s printed output
+# calls out as trustworthy (exact fit, not underdetermined; exact
+# structural match; exact single-variable transform). Sparse/
+# underdetermined fits deliberately come back as "no confident pattern"
+# here too, matching analyze()'s own "UNTRUSTWORTHY" warning -- those
+# still need freeform LLM reasoning to validate.
+
+
+def find_pattern(data, degree=2):
+    """Structured counterpart to analyze(). Returns a pattern dict if a
+    trustworthy pattern was found, else None."""
+    is_structural, buckets = check_structural_pattern(data)
+    structural_match = is_structural and len(buckets) > 1
+    if structural_match:
+        return {
+            "kind": "structural",
+            "buckets": {k: next(iter(v)) for k, v in buckets.items()},
+            "summary": "output depends only on which input slots are present",
+        }
+
+    sv_hits = try_single_variable_transforms(data)
+    if sv_hits:
+        return {
+            "kind": "single_variable",
+            "transform_name": sv_hits[0],
+            "summary": f"single-variable transform: {sv_hits[0]}",
+        }
+
+    result = fit_polynomial(data, degree=degree)
+    if result:
+        names, coef, max_resid, underdetermined = result
+        if max_resid < 1e-6 and not underdetermined:
+            return {
+                "kind": "polynomial",
+                "names": names,
+                "coef": [float(c) for c in coef],
+                "summary": f"exact polynomial fit: {format_polynomial(names, coef)}",
+            }
+
+    return None
+
+
+def apply_pattern(pattern, inputs):
+    """Apply a pattern dict (from find_pattern) to a new inputs tuple.
+    Raises ValueError if the pattern can't be applied to this input shape
+    (e.g. a structural pattern with a presence-pattern never seen in
+    training data)."""
+    kind = pattern["kind"]
+    if kind == "structural":
+        key = tuple(x is not None for x in inputs)
+        if key not in pattern["buckets"]:
+            raise ValueError(f"presence pattern {key} not seen during training")
+        return pattern["buckets"][key]
+    if kind == "single_variable":
+        if len(inputs) != 1 or inputs[0] is None:
+            raise ValueError("single_variable pattern requires exactly one input")
+        fn = SINGLE_VARIABLE_TRANSFORMS[pattern["transform_name"]]
+        return fn(inputs[0])
+    if kind == "polynomial":
+        if any(v is None for v in inputs):
+            raise ValueError("polynomial pattern requires all inputs present")
+        _, feats = build_poly_features(inputs, degree=2)
+        return float(sum(c * f for c, f in zip(pattern["coef"], feats)))
+    raise ValueError(f"unknown pattern kind: {kind}")
