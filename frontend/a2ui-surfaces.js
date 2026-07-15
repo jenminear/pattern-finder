@@ -77,6 +77,7 @@ const ACTION_LABELS = {
   created: "New pattern created",
   updated_label_set: "Existing pattern's label set updated",
   linked_only: "Linked to this pattern (label set unchanged)",
+  revised: "Pattern revised after a wrong guess",
 };
 
 export class PatternCapturedCard extends LitElement {

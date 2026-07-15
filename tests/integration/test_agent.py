@@ -185,3 +185,48 @@ async def test_guess_via_seeded_script_needs_no_llm_call() -> None:
     assert "49" in guess_reply
     reasoning = next(d for d in guess_data if d.get("surface") == "agent_reasoning")
     assert reasoning["matched_via"] == "pattern_search"
+
+
+@pytest.mark.asyncio
+async def test_wrong_exact_pattern_guess_triggers_deterministic_revision() -> None:
+    # A confident exact_pattern guess turns out wrong -- the deterministic
+    # Learn-phase layer must re-search the FULL history for this label set
+    # (now including the new counterexample) rather than silently keeping
+    # the wrong rule or discarding it. Seeded from a single ambiguous
+    # example (x0=1 is consistent with both "x0" and "x0^2"), so the
+    # stored rule happens to be the wrong one until a second data point
+    # disambiguates it.
+    label = "rev_seed_x"
+    seed_id = db_ops.insert_scenario("numeric", {label: "1"}, "1")
+    pattern_id = db_ops.upsert_pattern("identity", "x0")
+    db_ops.link_pattern_to_scenarios(
+        pattern_id, [seed_id], update_label_set=True, label_names=[label]
+    )
+
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(app_name="test", user_id="test_user")
+    runner = Runner(agent=root_agent, session_service=session_service, app_name="test")
+
+    guess_reply, guess_data = await _send(runner, session.id, f"PHASE: guess\nlabel={label} value=2")
+    assert "2" in guess_reply  # old rule "x0" predicts 2
+    reasoning = next(d for d in guess_data if d.get("surface") == "agent_reasoning")
+    assert reasoning["matched_via"] == "exact_pattern"
+
+    learn_reply, learn_data = await _send(
+        runner,
+        session.id,
+        f"PHASE: learn\nCORRECT_CONSEQUENCE: 4\nlabel={label} value=2\n"
+        f"GUESS_VALUE: 2\nMATCHED_VIA: exact_pattern\nPATTERN_ID: {pattern_id}",
+    )
+    assert "better-fitting rule" in learn_reply.lower()
+    captured = next(d for d in learn_data if d.get("surface") == "pattern_captured")
+    assert captured["action"] == "revised"
+    assert captured["matched"] is False
+    assert "x^2" in captured["rule_or_code_link"]
+
+    updated = db_ops.get_pattern_by_label_set([label])
+    assert updated["pattern_id"] == pattern_id
+    assert "x^2" in updated["rule_or_code_link"]
+    scenarios = db_ops.get_scenarios_by_label_set([label])
+    assert len(scenarios) == 2
+    assert all(s["pattern_id"] == pattern_id for s in scenarios)

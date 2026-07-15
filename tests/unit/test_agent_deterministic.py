@@ -111,14 +111,14 @@ class TestGuessPhaseContent:
         assert "qualitative size" not in handoff  # only the rule, not the description
         assert "the bigger of the two values" in handoff
         # The handoff must give the LLM the canonical x0/x1/... mapping
-        # directly (alphabetical: td_a < td_b) rather than leaving it to
+        # directly (ascending order: td_a < td_b) rather than leaving it to
         # infer an order from request context.
         assert f"x0={a}, x1={b}" in handoff
 
     @pytest.mark.asyncio
     async def test_exact_pattern_apply_is_robust_to_request_label_order(self, agent_module):
         # Regression test: x0/x1/... must be anchored to the label set
-        # sorted alphabetically, NOT to whatever order a given request
+        # sorted in ascending order, NOT to whatever order a given request
         # happens to list labels in (there's no order stored in the DB --
         # labels are matched as a set). Names below sort as a, b, c.
         a, b, c = "ro_a", "ro_b", "ro_c"
@@ -126,14 +126,14 @@ class TestGuessPhaseContent:
             db_ops.insert_scenario("t", {a: str(x), b: str(y), c: str(z)}, str(x + y * z))
             for x, y, z in [(1, 2, 3), (4, 5, 6)]
         ]
-        # x0=a, x1=b, x2=c (alphabetical) -- rule means a + b*c.
+        # x0=a, x1=b, x2=c (ascending order) -- rule means a + b*c.
         pid = db_ops.upsert_pattern("combo", "x0 + x1*x2")
         db_ops.link_pattern_to_scenarios(
             pid, ids, update_label_set=True, label_names=[a, b, c]
         )
 
         # Submit the SAME values but listed in a different order than
-        # alphabetical (c first) -- must still compute a + b*c, not
+        # ascending (c first) -- must still compute a + b*c, not
         # silently reassign x0/x1/x2 to the request's own order.
         content, handoff = await agent_module._guess_phase_content(
             {c: "3", a: "1", b: "2"}, emit_ui=True
@@ -175,9 +175,10 @@ class TestGuessPhaseContent:
 class TestLearnPhaseContent:
     @pytest.mark.asyncio
     async def test_no_match_records_scenario_without_pattern(self, agent_module):
-        content = await agent_module._learn_phase_content(
+        content, handoff = await agent_module._learn_phase_content(
             {"a": "1", "b": "2"}, "99", None, None, None, "42", True, 0.5
         )
+        assert handoff is None
         assert "No pattern was created or linked" in content.parts[0].text
         raw = content.parts[1].inline_data.data[
             len(agent_module.A2A_DATA_PART_START_TAG) : -len(
@@ -190,9 +191,10 @@ class TestLearnPhaseContent:
 
     @pytest.mark.asyncio
     async def test_dont_know_guess_records_without_pattern(self, agent_module):
-        content = await agent_module._learn_phase_content(
+        content, handoff = await agent_module._learn_phase_content(
             {"a": "1", "b": "2"}, "99", None, None, None, "I don't know", True, 0.5
         )
+        assert handoff is None
         assert "No pattern was created or linked" in content.parts[0].text
 
     @pytest.mark.asyncio
@@ -205,9 +207,10 @@ class TestLearnPhaseContent:
         pid = db_ops.upsert_pattern("sum", "x0 + x1")
         db_ops.link_pattern_to_scenarios(pid, seeded, update_label_set=True, label_names=[a, b])
 
-        content = await agent_module._learn_phase_content(
+        content, handoff = await agent_module._learn_phase_content(
             {a: "10", b: "20"}, "30", "exact_pattern", pid, None, "30", True, 0.5
         )
+        assert handoff is None
         assert "Correct" in content.parts[0].text
         scenarios = db_ops.get_scenarios_by_label_set([a, b])
         assert len(scenarios) == 3
@@ -216,14 +219,111 @@ class TestLearnPhaseContent:
     @pytest.mark.asyncio
     async def test_label_independent_match_links_only_this_scenario(self, agent_module):
         pid = db_ops.upsert_pattern("abstracted pattern", "x0 * 2")
-        content = await agent_module._learn_phase_content(
+        content, handoff = await agent_module._learn_phase_content(
             {"li_a": "3", "li_b": "4"}, "6", "label_independent_match", pid, None, "6", True, 0.5
         )
+        assert handoff is None
         assert "Correct" in content.parts[0].text
         # Safety rule: must NOT register this label set against the pattern.
         assert db_ops.get_pattern_by_label_set(["li_a", "li_b"]) is None
         scenarios = db_ops.get_scenarios_by_label_set(["li_a", "li_b"])
         assert scenarios[0]["pattern_id"] == pid
+
+    @pytest.mark.asyncio
+    async def test_label_independent_match_wrong_guess_is_not_revised(self, agent_module):
+        # A label-independent match failing doesn't mean the pattern is
+        # wrong for its OWN label set -- just that it didn't generalize to
+        # this unrelated one. Must fall through to plain "no pattern"
+        # recording, not _attempt_pattern_revision.
+        pid = db_ops.upsert_pattern("some pattern", "x0 * 2")
+        content, handoff = await agent_module._learn_phase_content(
+            {"liw_a": "3"}, "99", "label_independent_match", pid, "x0 * 2", "6", True, 0.5
+        )
+        assert handoff is None
+        assert "No pattern was created or linked" in content.parts[0].text
+        unchanged = next(
+            p for p in db_ops.get_all_pattern_descriptions() if p["pattern_id"] == pid
+        )
+        assert unchanged["rule_or_code_link"] == "x0 * 2"
+
+
+class TestPatternRevision:
+    # Section VII's "go back and re-evaluate" requirement: a confident
+    # exact_pattern guess just turned out wrong. Both tests below rely on
+    # the fact that _learn_phase_content already inserted the new
+    # counterexample scenario BEFORE checking `matched`, so by the time
+    # revision runs, the counterexample is already part of this label
+    # set's history.
+    @pytest.mark.asyncio
+    async def test_deterministic_revision_replaces_rule_with_no_llm_needed_for_the_fit(
+        self, agent_module
+    ):
+        # Seed a pattern from a single ambiguous example: x0=1 is
+        # consistent with BOTH "x0" (identity) and "x0^2". The stored rule
+        # happens to be the wrong one ("x0").
+        label = "rev_x"
+        seed_id = db_ops.insert_scenario("numeric", {label: "1"}, "1")
+        pid = db_ops.upsert_pattern("identity", "x0")
+        db_ops.link_pattern_to_scenarios(pid, [seed_id], update_label_set=True, label_names=[label])
+
+        # Old rule "x0" predicts guess=2 for x0=2, but the true answer is 4
+        # (x0^2) -- now disambiguated by this second data point.
+        original = agent_module._narrow_llm_call
+
+        async def fake_narrow_llm_call(prompt, model):
+            return "the output is the square of the single input"
+
+        agent_module._narrow_llm_call = fake_narrow_llm_call
+        try:
+            content, handoff = await agent_module._learn_phase_content(
+                {label: "2"}, "4", "exact_pattern", pid, "x0", "2", True, 0.5
+            )
+        finally:
+            agent_module._narrow_llm_call = original
+
+        assert handoff is None
+        assert content is not None
+        raw = content.parts[1].inline_data.data[
+            len(agent_module.A2A_DATA_PART_START_TAG) : -len(
+                agent_module.A2A_DATA_PART_END_TAG
+            )
+        ]
+        payload = json.loads(raw)["data"]
+        assert payload["matched"] is False
+        assert payload["action"] == "revised"
+        assert "x^2" in payload["rule_or_code_link"]
+
+        updated = db_ops.get_pattern_by_label_set([label])
+        assert updated["pattern_id"] == pid
+        assert "x^2" in updated["rule_or_code_link"]
+        scenarios = db_ops.get_scenarios_by_label_set([label])
+        assert len(scenarios) == 2  # seed + the new counterexample
+        assert all(s["pattern_id"] == pid for s in scenarios)
+
+    @pytest.mark.asyncio
+    async def test_hands_off_when_deterministic_script_cant_fix_it(self, agent_module):
+        # No pre-seeded history at all for this label set -- after
+        # _learn_phase_content inserts the new (sole) scenario, history has
+        # exactly 1 row, below find_pattern's own 2-row minimum, so the
+        # deterministic re-search is guaranteed to come up empty and this
+        # must hand off rather than silently keep (or blindly discard) the
+        # old rule.
+        pid = db_ops.upsert_pattern("some pattern", "x0 + 1")
+        content, handoff = await agent_module._learn_phase_content(
+            {"nopat_x": "5"}, "99", "exact_pattern", pid, "x0 + 1", "6", True, 0.5
+        )
+        assert content is None
+        assert handoff is not None
+        assert str(pid) in handoff
+        assert "x0 + 1" in handoff
+        assert "6" in handoff  # the wrong guess
+        assert "99" in handoff  # the correct consequence
+        assert "upsert_pattern" in handoff  # agent saves the revision itself
+        # The old rule must be untouched -- nothing confident was found.
+        unchanged = next(
+            p for p in db_ops.get_all_pattern_descriptions() if p["pattern_id"] == pid
+        )
+        assert unchanged["rule_or_code_link"] == "x0 + 1"
 
 
 class TestSanitizeScenarioValues:

@@ -27,12 +27,21 @@ this revision, most of both turns resolve WITHOUT the LLM at all. A single
     None, handing off to the full agent (Handoff 1) for either "interpret
     a known text-directive rule" or "freeform pattern-search reasoning".
 
-    PHASE: learn -- always resolves in the callback. insert_scenario is
-    always deterministic; comparing the guess to the correct answer is
+    PHASE: learn -- almost always resolves in the callback. insert_scenario
+    is always deterministic; comparing the guess to the correct answer is
     deterministic for numeric answers and a narrow (non-agent) LLM call
     otherwise; capturing/linking a pattern is deterministic when an
     existing pattern was reused, and only a narrow LLM call (to write the
-    label-free description) when pattern-search found something new.
+    label-free description) when pattern-search found something new. The
+    one case that hands off to the full agent (Handoff 2): a confident
+    exact_pattern guess turned out WRONG. The deterministic layer
+    re-searches the full history for this label set (now including the
+    new counterexample) with the same seeded script Handoff 1 uses; if
+    that finds a fix, it applies it with no LLM call. If not, it hands off
+    so the agent can look harder via pattern_search -- unlike Handoff 1,
+    the agent itself saves a revision it finds (via upsert_pattern/
+    link_pattern_to_scenarios), since there's no later turn for a
+    deterministic step to do it instead.
 
 Returning `genai_types.Content` from `before_agent_callback` sets
 `ctx.end_invocation = True` in ADK's BaseAgent.run_async, which skips the
@@ -332,11 +341,11 @@ def evaluate_numeric_rule(expression: str, variables: dict[str, float]) -> dict:
             this is a restricted AST walk, not a code sandbox.
         variables: Maps x0, x1, ... to their numeric values for this
             scenario. "Order" here always means the scenario's labels
-            sorted alphabetically by name (x0 = first alphabetically),
+            sorted in ascending order by name (x0 = first in that order),
             NOT the order labels happen to appear in any given request --
             the labels table has no stored order, and requests can list
             the same label set in any order (whichever row the user typed
-            each label into), so alphabetical order is the only stable
+            each label into), so ascending order is the only stable
             anchor for what x0/x1/... mean across requests.
 
     Returns:
@@ -410,8 +419,8 @@ def emit_agent_reasoning(
             arithmetic expression using x0, x1, x2, ... for the labeled
             inputs -- never the actual label names -- if computable,
             otherwise a short text directive). x0/x1/... always refer to
-            this scenario's labels sorted ALPHABETICALLY by name (x0 =
-            first alphabetically), regardless of what order they were
+            this scenario's labels sorted in ASCENDING order by name (x0 =
+            first in that order), regardless of what order they were
             given to you in -- use the x0=..., x1=... mapping in the
             context you were given rather than re-deriving it. Needed
             later to capture a NEW pattern if this guess turns out
@@ -427,13 +436,17 @@ def emit_pattern_captured(
     scenarios_linked: int = 0,
 ) -> dict:
     """Record the Pattern Captured UI surface. Call this as your LAST action
-    in PHASE: learn, IF a pattern was created, updated, or linked. Skip
-    calling this if no pattern was touched (wrong guess or "I don't know").
+    in PHASE: learn, IF a pattern was created, updated, linked, or revised.
+    Skip calling this if no pattern was touched (wrong guess with nothing
+    to revise, or "I don't know").
 
     Args:
-        action: One of "created", "updated_label_set", or "linked_only"
-            (matching guess-step 2, guess-step 1, and guess-step 3
-            respectively).
+        action: One of "created", "updated_label_set", "linked_only", or
+            "revised" (a wrong exact-pattern guess whose rule you just
+            replaced via upsert_pattern after re-examining ALL scenarios
+            sharing this label set -- only use this after you've actually
+            saved the revised rule yourself; never call this with
+            action="revised" if you decided nothing fit confidently).
         text_desc: The pattern's abstracted, label-free description.
         rule_or_code_link: The pattern's rule/code.
         scenarios_linked: How many scenarios got linked to this pattern.
@@ -552,9 +565,9 @@ async def _write_pattern_description(rule: str, model: str) -> str:
         'pattern only, e.g. "data fit a parabolic pattern when labels are '
         'sorted in ascending order".\n\n'
         "Context on notation: x0, x1, x2, ... are VARIABLE REFERENCES to "
-        "the scenario's labeled inputs, positionally sorted alphabetically "
-        "by label name (x0 = first alphabetically, x1 = second, etc.) -- "
-        "they are not exponents or coefficients. A rule that is a bare "
+        "the scenario's labeled inputs, positionally sorted in ascending "
+        "order by label name (x0 = first in that order, x1 = second, "
+        "etc.) -- they are not exponents or coefficients. A rule that is a bare "
         "reference like \"x2\" with no operator means the output directly "
         "copies/equals that one specific input's value verbatim (an "
         "identity/copy rule, e.g. \"output = 5\" when x2=5, or "
@@ -612,6 +625,32 @@ def _format_history_for_prompt(scenarios: list[dict], label_names: list[str]) ->
     return "\n".join(lines)
 
 
+def _fetch_history_and_search(
+    label_names: list[str],
+) -> tuple[list[dict], list, dict | None]:
+    """Fetch every scenario sharing this label set and run the seeded
+    deterministic script against it. Shared by two callers that both need
+    "the full history for this label set, deterministically searched" but
+    do different things with the result: _guess_phase_content applies a
+    found pattern to a NEW scenario to produce a guess, while
+    _attempt_pattern_revision (Learn phase) treats a found pattern as a
+    candidate REPLACEMENT rule for one that was just proven wrong -- the
+    fetch-and-search step itself is identical either way."""
+    scenarios = db_ops.get_scenarios_by_label_set(label_names)
+    history = _scenarios_to_training_data(scenarios, label_names)
+    found = pattern_search_script.find_pattern(history) if len(history) >= 2 else None
+    return scenarios, history, found
+
+
+def _script_summary_text(found: dict | None) -> str:
+    return (
+        found["summary"]
+        if found
+        else "no confident structural, single-variable, or fully-determined "
+        "polynomial match"
+    )
+
+
 async def _guess_phase_content(
     label_values: dict[str, str | None], emit_ui: bool
 ) -> tuple[genai_types.Content | None, str | None]:
@@ -627,11 +666,11 @@ async def _guess_phase_content(
     -- see that function's docstring for why state wasn't used for this.
     """
     # Canonical order: x0, x1, x2, ... always refer to this label set's
-    # labels sorted ALPHABETICALLY -- never the order labels happen to
+    # labels sorted in ASCENDING order -- never the order labels happen to
     # appear in this particular request's text (which varies by which row
     # the user typed each label into, or how a test/LLM happens to build
     # the dict). The labels table has no stored order of its own, so
-    # alphabetical is the only anchor stable across requests -- without
+    # ascending order is the only anchor stable across requests -- without
     # it, a rule learned as "x0 + x1*x2" from one label order would
     # silently compute something different when the same label set is
     # later submitted in a different order. See evaluate_numeric_rule's
@@ -680,7 +719,7 @@ async def _guess_phase_content(
             f"its rule is not a plain numeric expression (or an input "
             f"wasn't numeric), so it needs your judgment to interpret and "
             f"apply: {rule}\nIf it uses x0, x1, x2, ..., those always refer "
-            f"to this label set's labels sorted alphabetically -- "
+            f"to this label set's labels sorted in ascending order -- "
             f"{mapping} (values: {values_text}) -- not the order given to "
             f"you here. Apply it to this scenario's values and report your "
             f"guess. Do not re-call get_pattern_by_label_set -- you "
@@ -688,9 +727,7 @@ async def _guess_phase_content(
         )
         return None, handoff
 
-    scenarios = db_ops.get_scenarios_by_label_set(sorted_names)
-    history = _scenarios_to_training_data(scenarios, sorted_names)
-    found = pattern_search_script.find_pattern(history) if len(history) >= 2 else None
+    scenarios, history, found = _fetch_history_and_search(sorted_names)
     if found:
         try:
             new_inputs = tuple(_try_float(label_values[name]) for name in sorted_names)
@@ -718,12 +755,7 @@ async def _guess_phase_content(
     # No deterministic answer. Hand off for freeform search, with
     # everything already fetched so neither the agent nor pattern_search
     # need to redo this work.
-    script_summary = (
-        found["summary"]
-        if found
-        else "no confident structural, single-variable, or fully-determined "
-        "polynomial match"
-    )
+    script_summary = _script_summary_text(found)
     history_text = _format_history_for_prompt(scenarios, sorted_names)
     mapping = ", ".join(f"x{i}={name}" for i, name in enumerate(sorted_names))
     handoff = (
@@ -736,7 +768,7 @@ async def _guess_phase_content(
         f"candidate with strong confidence, apply it and report your "
         f"guess. If you or pattern_search report a computable rule, write "
         f"it using x0, x1, x2, ... where those always refer to this label "
-        f"set's labels sorted alphabetically -- {mapping} -- so the rule "
+        f"set's labels sorted in ascending order -- {mapping} -- so the rule "
         f"stays reusable regardless of what order a future request lists "
         f"these labels in. If not, call get_all_pattern_descriptions and "
         f"check whether this scenario's values plausibly match any "
@@ -787,6 +819,95 @@ def _infer_scenario_type(values: dict[str, str | None]) -> str:
     return "mixed"
 
 
+async def _attempt_pattern_revision(
+    label_names: list[str],
+    pattern_id: int,
+    old_rule: str | None,
+    wrong_guess: str | None,
+    correct_consequence: str,
+    scenario_id: int,
+    model: str,
+    emit_ui: bool,
+) -> tuple[genai_types.Content | None, str | None]:
+    """A high-confidence exact_pattern guess just turned out wrong -- rather
+    than silently recording the counterexample and leaving the (now known
+    to be flawed) rule in place, re-run the SAME deterministic
+    fetch-and-search step _guess_phase_content uses for fresh discovery
+    (_fetch_history_and_search), but against the full history for this
+    label set, which by now already includes the new counterexample (its
+    scenario row was inserted before this is called). If the script finds
+    a fit that explains ALL of it -- which, by find_pattern's own
+    conservative design, it only ever reports when the fit is exact and
+    fully determined -- update the pattern in place. Otherwise hand off to
+    the agent (same tuple contract as _guess_phase_content) to try harder
+    via freeform pattern_search before giving up.
+
+    Deliberately scoped to matched_via == "exact_pattern" only (see
+    _learn_phase_content) -- a label-independent match failing doesn't
+    mean the matched pattern is wrong for its OWN label set, just that it
+    didn't generalize to this unrelated one, so it isn't re-evaluated
+    here.
+    """
+    scenarios, _history, found = _fetch_history_and_search(label_names)
+    if found:
+        new_rule = _pattern_rule_string(found)
+        text_desc = await _write_pattern_description(new_rule, model)
+        db_ops.upsert_pattern(text_desc, new_rule, pattern_id=pattern_id)
+        linked_ids = [s["scenario_id"] for s in scenarios]
+        db_ops.link_pattern_to_scenarios(
+            pattern_id, linked_ids, update_label_set=True, label_names=label_names
+        )
+        payload = {
+            "matched": False,
+            "action": "revised",
+            "text_desc": text_desc,
+            "rule_or_code_link": new_rule,
+            "scenarios_linked": len(linked_ids),
+        }
+        text = (
+            f"Recorded scenario {scenario_id}. Your guess was incorrect -- "
+            f"re-checked pattern_id={pattern_id} against all "
+            f"{len(linked_ids)} scenarios sharing this label set (including "
+            f"this new one) and found a better-fitting rule: {new_rule}. "
+            f"Updated the pattern -- no LLM needed."
+        )
+        return _compose_content(text, "pattern_captured", payload, emit_ui), None
+
+    # Deterministic script still can't find anything that fits ALL of it.
+    # Hand off for freeform re-evaluation, same tuple contract as
+    # _guess_phase_content's own handoff.
+    script_summary = _script_summary_text(found)
+    history_text = _format_history_for_prompt(scenarios, label_names)
+    mapping = ", ".join(f"x{i}={name}" for i, name in enumerate(label_names))
+    handoff = (
+        f"Why you were invoked: pattern_id={pattern_id}'s existing rule "
+        f"({old_rule!r}) just predicted {wrong_guess!r} for a new "
+        f"scenario, but the correct consequence turned out to be "
+        f"{correct_consequence!r} -- so that rule is WRONG, or at least "
+        f"incomplete. The deterministic script (run first, before you were "
+        f"invoked) re-searched all {len(scenarios)} scenarios sharing this "
+        f"label set -- including the new counterexample -- and found: "
+        f"{script_summary}\nAll scenarios sharing this label set (values -> "
+        f"consequence):\n{history_text}\nUse the pattern_search tool (give "
+        f"it this full history and the script's result) or your own "
+        f"sandboxed reasoning to look for a DIFFERENT or more complex rule "
+        f"that explains EVERY one of these examples, not just the ones the "
+        f"old rule happened to fit -- the old rule may have been an "
+        f"overly hasty conclusion from too few examples. If it uses x0, "
+        f"x1, x2, ..., those always refer to this label set's labels "
+        f"sorted in ascending order -- {mapping}. If you find a rule that "
+        f"fits ALL examples with strong confidence, call upsert_pattern "
+        f"(pattern_id={pattern_id}) and link_pattern_to_scenarios yourself "
+        f"via your MCP tools to save it -- this is the one case where you "
+        f"write to the DB directly, since there's no further turn for a "
+        f"deterministic layer to do it for you. If nothing fits ALL "
+        f"examples confidently, do NOT force a replacement rule -- leave "
+        f"the existing pattern as-is and say plainly in your reply that it "
+        f"couldn't be confidently revised yet."
+    )
+    return None, handoff
+
+
 async def _learn_phase_content(
     label_values: dict[str, str | None],
     correct_consequence: str,
@@ -796,7 +917,13 @@ async def _learn_phase_content(
     guess_value: str | None,
     emit_ui: bool,
     effort_dial: float,
-) -> genai_types.Content:
+) -> tuple[genai_types.Content | None, str | None]:
+    """Returns (resolved_content, handoff_instruction) -- exactly one is
+    non-None, same contract as _guess_phase_content. Almost always
+    resolves right here without an LLM call; the one exception is
+    _attempt_pattern_revision's handoff, for when a confident exact_pattern
+    guess was wrong and the deterministic script alone can't find a fix.
+    """
     # Sorted for consistency with _guess_phase_content's canonical x0/x1/...
     # order -- not load-bearing here (get_scenarios_by_label_set/
     # link_pattern_to_scenarios treat label sets as sets, order doesn't
@@ -813,12 +940,23 @@ async def _learn_phase_content(
     # naive client-side re-derivation that wouldn't match this logic.
     matched = await _consequence_matches(guess_value, correct_consequence, model)
     if not matched:
+        if matched_via == "exact_pattern" and pattern_id is not None:
+            return await _attempt_pattern_revision(
+                label_names,
+                pattern_id,
+                applied_rule,
+                guess_value,
+                correct_consequence,
+                scenario_id,
+                model,
+                emit_ui,
+            )
         text = (
             f"Recorded scenario {scenario_id}. No pattern was created or "
             f"linked (the guess didn't match, or was \"I don't know\")."
         )
         payload = {"matched": False, "action": "none", "scenarios_linked": 0}
-        return _compose_content(text, "pattern_captured", payload, emit_ui)
+        return _compose_content(text, "pattern_captured", payload, emit_ui), None
 
     if matched_via in ("exact_pattern", "label_independent_match") and pattern_id is not None:
         update_label_set = matched_via == "exact_pattern"
@@ -843,7 +981,7 @@ async def _learn_phase_content(
             f"Recorded scenario {scenario_id}. Correct! Linked to existing "
             f"pattern_id={pattern_id} ({len(linked_ids)} scenario(s))."
         )
-        return _compose_content(text, "pattern_captured", payload, emit_ui)
+        return _compose_content(text, "pattern_captured", payload, emit_ui), None
 
     if matched_via == "pattern_search" and applied_rule:
         text_desc = await _write_pattern_description(applied_rule, model)
@@ -865,7 +1003,7 @@ async def _learn_phase_content(
             f"Recorded scenario {scenario_id}. Correct! Created new "
             f"pattern_id={new_pattern_id}: {text_desc}"
         )
-        return _compose_content(text, "pattern_captured", payload, emit_ui)
+        return _compose_content(text, "pattern_captured", payload, emit_ui), None
 
     # Matched, but missing/garbled context about how -- conservative:
     # record the scenario only, don't guess at a pattern capture action.
@@ -874,7 +1012,7 @@ async def _learn_phase_content(
         f"context about how this was matched to safely capture a pattern."
     )
     payload = {"matched": True, "action": "none", "scenarios_linked": 0}
-    return _compose_content(text, "pattern_captured", payload, emit_ui)
+    return _compose_content(text, "pattern_captured", payload, emit_ui), None
 
 
 # ---------------------------------------------------------------------------
@@ -905,7 +1043,7 @@ Report back:
   it's a computable expression, write it using x0, x1, x2, ... for the
   scenario's labeled inputs -- never the actual label names. Use the
   x0=..., x1=... mapping given to you in the request (the labels sorted
-  alphabetically) rather than re-deriving your own order -- this keeps the
+  in ascending order) rather than re-deriving your own order -- this keeps the
   rule reusable later regardless of what order a future request lists
   these same labels in, and label-independent (like an abstracted pattern
   description already is) if reused against a scenario with entirely
@@ -977,8 +1115,10 @@ db_mcp_toolset = McpToolset(
 # ---------------------------------------------------------------------------
 # The dispatcher: intercepts every turn before the LLM/tool loop. Returns
 # Content to resolve deterministically (or via a narrow LLM call), or None
-# to hand off to the full agent (Guess phase only -- Learn phase always
-# resolves here). See module docstring for the full design.
+# to hand off to the full agent -- Guess phase for fresh pattern discovery,
+# or (the one Learn-phase exception) pattern revision, when a confident
+# exact_pattern guess was wrong and the deterministic script alone
+# couldn't find a fix. See module docstring for the full design.
 # ---------------------------------------------------------------------------
 
 
@@ -998,7 +1138,7 @@ async def _before_agent_dispatch(
 
     emit_ui_field = _parse_field(text, "EMIT_UI")
     emit_ui = (emit_ui_field or "on").strip().lower() != "off"
-    emit_ui_instruction = (
+    emit_ui_instruction_guess = (
         "As your LAST action, call emit_agent_reasoning with your guess, "
         "confidence, matched_via, and trace, plus pattern_id and rule where "
         "applicable (see its docstring for the exact fields) -- these let "
@@ -1008,6 +1148,16 @@ async def _before_agent_dispatch(
         "computable expression."
         if emit_ui
         else "Do NOT call emit_agent_reasoning this turn -- just reply with text."
+    )
+    emit_ui_instruction_revision = (
+        "If (and only if) you saved a revised rule via upsert_pattern, call "
+        "emit_pattern_captured as your LAST action with action=\"revised\", "
+        "the new text_desc and rule_or_code_link, and scenarios_linked set "
+        "to the total number of scenarios sharing this label set. If "
+        "nothing fit confidently and you left the pattern as-is, do NOT "
+        "call emit_pattern_captured -- just explain in your reply."
+        if emit_ui
+        else "Do NOT call emit_pattern_captured this turn -- just reply with text."
     )
 
     phase = (_parse_field(text, "PHASE") or "").lower()
@@ -1021,7 +1171,7 @@ async def _before_agent_dispatch(
             return content
         _handoff_instructions[callback_context.invocation_id] = (
             f"{handoff}\n\nYour confidence bar and how hard to search: "
-            f"{_effort_description(effort_dial)}\n\n{emit_ui_instruction}"
+            f"{_effort_description(effort_dial)}\n\n{emit_ui_instruction_guess}"
         )
         return None
 
@@ -1034,7 +1184,7 @@ async def _before_agent_dispatch(
         pattern_id_field = _parse_field(text, "PATTERN_ID")
         applied_rule = _parse_field(text, "APPLIED_RULE")
         guess_value = _parse_field(text, "GUESS_VALUE")
-        return await _learn_phase_content(
+        content, handoff = await _learn_phase_content(
             label_values,
             correct_consequence,
             matched_via,
@@ -1044,41 +1194,64 @@ async def _before_agent_dispatch(
             emit_ui,
             effort_dial,
         )
+        if content is not None:
+            return content
+        _handoff_instructions[callback_context.invocation_id] = (
+            f"{handoff}\n\nYour confidence bar and how hard to search: "
+            f"{_effort_description(effort_dial)}\n\n{emit_ui_instruction_revision}"
+        )
+        return None
 
     return None
 
 
 # ---------------------------------------------------------------------------
-# Root agent. Reached only for Guess-phase turns the deterministic
-# pre-check couldn't resolve (Learn phase always resolves in the
-# dispatcher above and never reaches this instruction in practice).
+# Root agent. Reached only for turns the deterministic pre-check couldn't
+# resolve: Guess-phase fresh discovery, or (the one Learn-phase exception)
+# pattern revision after a confident exact_pattern guess was wrong.
 # ---------------------------------------------------------------------------
 
 _ROOT_INSTRUCTION = """You are the Pattern Finder agent. Users give you a
 "scenario" made of up to 5 labeled inputs (label -> value; values can be
 numeric or textual, and a slot may be intentionally absent). Your job is to
 guess the scenario's "consequence" by finding and reusing patterns from
-past scenarios.
+past scenarios, and to help revise a pattern when new evidence shows it's
+wrong.
 
-You are only ever invoked for a guess AFTER a deterministic pre-check has
-already ruled out the fast, no-LLM-needed cases (an exact label-set match
-with a plain numeric rule, or the seeded pattern-search script finding a
-confident match by itself). Every message you receive this turn is
-appended with the specific reason you were invoked, what's already been
-ruled out, and any historical data already fetched for you -- read that
-appended context carefully before acting, and don't redo work it says is
-already done (e.g. don't re-call get_pattern_by_label_set if you're told a
-pattern was already found for you, and don't re-run the seeded script if
-you're told it already ran and what it found).
+You are only ever invoked AFTER a deterministic pre-check has already
+ruled out the fast, no-LLM-needed cases. Every message you receive this
+turn is appended with the specific reason you were invoked, what's
+already been ruled out, and any historical data already fetched for you --
+read that appended context carefully before acting, and don't redo work it
+says is already done (e.g. don't re-call get_pattern_by_label_set if
+you're told a pattern was already found for you, and don't re-run the
+seeded script if you're told it already ran and what it found).
 
-Always state, in your reply: your guess (or "I don't know"), your
-confidence, how you reached it, and which model answered. Then follow the
-appended instruction about whether to call emit_agent_reasoning.
+Two situations reach you:
 
-If you ever receive a "PHASE: learn" message directly, that's unexpected
-(the deterministic layer normally handles Learn phase entirely) --
-acknowledge that the correct consequence was noted, without fabricating
-any pattern-capture action you can't verify actually happened.
+1. PHASE: guess, no confident deterministic answer. Always state, in your
+reply: your guess (or "I don't know"), your confidence, how you reached
+it, and which model answered. Then follow the appended instruction about
+whether to call emit_agent_reasoning. In this situation, do NOT call
+upsert_pattern or link_pattern_to_scenarios yourself -- pattern storage
+for a guess is always handled by a separate deterministic step once the
+user confirms the correct consequence on a later turn.
+
+2. PHASE: learn, pattern revision: an existing pattern's confident answer
+was just WRONG. The appended context gives you the old rule, what it
+predicted, what the correct answer actually was, and the FULL history for
+this label set (including the new counterexample) -- the seeded script
+already tried and failed to find something that fits ALL of it. Use the
+pattern_search tool (or your own sandboxed reasoning) to look for a rule
+that explains EVERY example, not just most of them -- the old rule may
+have been an overly hasty fit to too few examples (Pattern Finder
+Outline.txt, Section VII). Unlike situation 1, if you find one: THIS is
+the one case where you save it directly, by calling upsert_pattern (with
+the given pattern_id) and link_pattern_to_scenarios yourself via your MCP
+tools -- there's no later turn for a deterministic step to do it for you.
+If nothing fits ALL examples confidently, do not call upsert_pattern at
+all; just say so plainly in your reply. Then follow the appended
+instruction about whether to call emit_pattern_captured.
 """
 
 root_agent = Agent(
