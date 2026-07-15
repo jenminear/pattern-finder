@@ -27,8 +27,9 @@
     <div id="input-rows"></div>
 
     <div class="field">
-      <label for="effort-dial">
-        How hard should it try? <span id="effort-dial-label">Balanced</span>
+      <label for="effort-dial" class="dial-label-row">
+        <span>How hard should it try?</span>
+        <span id="effort-dial-model"></span>
       </label>
       <input type="range" id="effort-dial" min="0" max="1" step="0.01" value="0.5" />
       <div class="range-endpoints">
@@ -53,33 +54,37 @@
 
     <agent-reasoning-card id="reasoning-card" hidden></agent-reasoning-card>
 
-    <div class="field" id="correct-answer-field" hidden>
-      <label for="correct-consequence">What's the correct consequence?</label>
-      <input type="text" id="correct-consequence" maxlength="300" />
-      <button id="submit-answer-btn" type="button">Submit Correct Answer</button>
-    </div>
-
     <pattern-captured-card id="captured-card" hidden></pattern-captured-card>
-
-    <div class="field">
-      <button id="new-scenario-btn" type="button">Start a New Scenario</button>
-    </div>
   </section>
 
-  <section class="panel" id="scorecard-panel">
-    <h2>Scorecard</h2>
-    <table id="scorecard">
-      <thead>
-        <tr><th></th><th>Count</th><th>%</th></tr>
-      </thead>
-      <tbody>
-        <tr><td>Scenarios processed</td><td id="sc-processed">0</td><td>&mdash;</td></tr>
-        <tr><td>"I don't know"</td><td id="sc-dontknow">0</td><td id="sc-dontknow-pct">&mdash;</td></tr>
-        <tr><td>Correct</td><td id="sc-correct">0</td><td id="sc-correct-pct">&mdash;</td></tr>
-        <tr><td>Incorrect</td><td id="sc-incorrect">0</td><td id="sc-incorrect-pct">&mdash;</td></tr>
-      </tbody>
-    </table>
-  </section>
+  <div class="right-column">
+    <section class="panel" id="scorecard-panel">
+      <h2>Scorecard</h2>
+      <table id="scorecard">
+        <thead>
+          <tr><th></th><th>Count</th><th>%</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Scenarios processed</td><td id="sc-processed">0</td><td>&mdash;</td></tr>
+          <tr><td>"I don't know"</td><td id="sc-dontknow">0</td><td id="sc-dontknow-pct">&mdash;</td></tr>
+          <tr><td>Correct</td><td id="sc-correct">0</td><td id="sc-correct-pct">&mdash;</td></tr>
+          <tr><td>Incorrect</td><td id="sc-incorrect">0</td><td id="sc-incorrect-pct">&mdash;</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" id="next-step-panel">
+      <div class="field pending-answer" id="correct-answer-field" hidden>
+        <label for="correct-consequence">Your turn &mdash; what's the correct consequence?</label>
+        <input type="text" id="correct-consequence" maxlength="300" />
+        <button id="submit-answer-btn" type="button">Submit Correct Answer</button>
+      </div>
+
+      <div class="field">
+        <button id="new-scenario-btn" type="button">Start a New Scenario</button>
+      </div>
+    </section>
+  </div>
 </main>
 
 <script type="module" src="a2ui-surfaces.js"></script>

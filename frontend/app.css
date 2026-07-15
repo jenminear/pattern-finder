@@ -34,6 +34,12 @@ main {
   align-items: start;
 }
 
+.right-column {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
 .panel {
   background: #fff;
   border: 1px solid var(--border);
@@ -67,6 +73,26 @@ main {
   display: block;
   font-weight: 600;
   margin-bottom: 0.35rem;
+}
+
+.field label.dial-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.dial-label-row span:last-child {
+  font-weight: 400;
+  color: #666;
+  font-size: 0.85rem;
+}
+
+.pending-answer {
+  background: var(--surface-accent);
+  border: 2px solid var(--accent-2);
+  border-radius: 8px;
+  padding: 1rem;
 }
 
 .checkbox-field label {

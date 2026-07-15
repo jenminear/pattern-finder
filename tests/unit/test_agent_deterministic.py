@@ -226,6 +226,77 @@ class TestLearnPhaseContent:
         assert scenarios[0]["pattern_id"] == pid
 
 
+class TestSanitizeScenarioValues:
+    # Regression coverage for a real bug observed live: a value field ended
+    # up storing "66I don't know." / "bananaI don't know." in
+    # scenario_inputs -- the agent's own "I don't know" phrase leaking into
+    # what should be pure user-entered data.
+    def test_strips_values_containing_dont_know(self, agent_module):
+        result = agent_module._sanitize_scenario_values(
+            {"a": "66I don't know.", "b": "bananaI don't know.", "c": "42"}
+        )
+        assert result == {"a": None, "b": None, "c": "42"}
+
+    def test_leaves_clean_values_and_none_untouched(self, agent_module):
+        result = agent_module._sanitize_scenario_values({"a": "apple", "b": None})
+        assert result == {"a": "apple", "b": None}
+
+    def test_case_insensitive_and_no_apostrophe_variant(self, agent_module):
+        result = agent_module._sanitize_scenario_values(
+            {"a": "I DONT KNOW", "b": "Don't Know"}
+        )
+        assert result == {"a": None, "b": None}
+
+
+class TestInferScenarioType:
+    def test_all_numeric(self, agent_module):
+        assert agent_module._infer_scenario_type({"a": "1", "b": "2.5"}) == "numeric"
+
+    def test_all_text(self, agent_module):
+        assert agent_module._infer_scenario_type({"a": "apple", "b": "cherry"}) == "text"
+
+    def test_mixed(self, agent_module):
+        assert agent_module._infer_scenario_type({"a": "1", "b": "apple"}) == "mixed"
+
+    def test_empty_when_all_none(self, agent_module):
+        assert agent_module._infer_scenario_type({"a": None, "b": None}) == "empty"
+
+    def test_ignores_none_slots_when_classifying(self, agent_module):
+        # A missing slot shouldn't count against an otherwise-numeric scenario.
+        assert agent_module._infer_scenario_type({"a": "1", "b": None}) == "numeric"
+
+
+class TestLearnPhaseSanitizesAndTypesScenario:
+    @pytest.mark.asyncio
+    async def test_dont_know_pollution_is_stripped_before_storage(self, agent_module):
+        await agent_module._learn_phase_content(
+            {"pol_a": "66I don't know.", "pol_b": "9"},
+            "99",
+            None,
+            None,
+            None,
+            "42",
+            True,
+            0.5,
+        )
+        scenarios = db_ops.get_scenarios_by_label_set(["pol_a", "pol_b"])
+        assert len(scenarios) == 1
+        assert scenarios[0]["inputs"]["pol_a"] is None
+        assert scenarios[0]["inputs"]["pol_b"] == "9"
+        # Only one non-None value remains ("9", numeric) -- still "numeric",
+        # not "mixed", since the polluted slot was dropped rather than kept
+        # as a text value.
+        assert scenarios[0]["type"] == "numeric"
+
+    @pytest.mark.asyncio
+    async def test_type_recorded_as_text_for_non_numeric_scenario(self, agent_module):
+        await agent_module._learn_phase_content(
+            {"typ_a": "apple", "typ_b": "cherry"}, "banana", None, None, None, "banana", True, 0.5
+        )
+        scenarios = db_ops.get_scenarios_by_label_set(["typ_a", "typ_b"])
+        assert scenarios[0]["type"] == "text"
+
+
 class TestWritePatternDescriptionPrompt:
     # Regression coverage for a real bug: a bare "xN" rule (no operator --
     # an identity/copy rule meaning "output = that one input's value

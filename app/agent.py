@@ -752,6 +752,40 @@ async def _guess_phase_content(
 # through to the full agent (see module docstring).
 # ---------------------------------------------------------------------------
 
+_DONT_KNOW_MARKERS = ("don't know", "dont know")
+
+
+def _sanitize_scenario_values(values: dict[str, str | None]) -> dict[str, str | None]:
+    """Guards scenario_inputs against the agent's own "I don't know" (or a
+    stray browser autofill/paste of it) leaking into a value field as if
+    it were real data -- observed live as e.g. "66I don't know." A value
+    containing this phrase isn't usable training data either way, so it's
+    dropped (treated as an absent slot, same as any other missing input)
+    rather than persisted verbatim."""
+    return {
+        name: (
+            None
+            if value is not None and any(m in value.lower() for m in _DONT_KNOW_MARKERS)
+            else value
+        )
+        for name, value in values.items()
+    }
+
+
+def _infer_scenario_type(values: dict[str, str | None]) -> str:
+    """scenarios.type: the composition of THIS scenario's input values
+    (not its consequence) -- numeric, text, or mixed. Extensible for
+    future distinctions (see .agents-cli-spec.md)."""
+    present = [v for v in values.values() if v is not None]
+    if not present:
+        return "empty"
+    numeric_flags = [_try_float(v) is not None for v in present]
+    if all(numeric_flags):
+        return "numeric"
+    if not any(numeric_flags):
+        return "text"
+    return "mixed"
+
 
 async def _learn_phase_content(
     label_values: dict[str, str | None],
@@ -768,7 +802,9 @@ async def _learn_phase_content(
     # link_pattern_to_scenarios treat label sets as sets, order doesn't
     # affect correctness), just keeps the convention uniform.
     label_names = sorted(label_values.keys())
-    scenario_id = db_ops.insert_scenario("t", label_values, correct_consequence)
+    sanitized_values = _sanitize_scenario_values(label_values)
+    scenario_type = _infer_scenario_type(sanitized_values)
+    scenario_id = db_ops.insert_scenario(scenario_type, sanitized_values, correct_consequence)
     model = _resolve_effort_tier(effort_dial).model
 
     # `matched` always goes into the payload (when emit_ui) even when

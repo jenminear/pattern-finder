@@ -12,22 +12,26 @@ const NUM_INPUT_ROWS = 5;
 // A2AClient.fromCardUrl() with the exact, known-correct card URL instead.
 const AGENT_CARD_URL = `${window.location.origin}/a2a/pattern-finder/.well-known/agent-card.json`;
 
-const EFFORT_TIER_LABELS = [
-  [1 / 3, "Economy"],
-  [2 / 3, "Balanced"],
-  [Infinity, "Max Quality"],
+// Mirrors app/agent.py's _ECONOMY/_BALANCED/_MAX_QUALITY tier boundaries and
+// model IDs -- display-only (the actual tier is resolved server-side from
+// the raw EFFORT_DIAL value), but must be kept in sync by hand if those
+// model IDs ever change.
+const EFFORT_TIER_MODELS = [
+  [1 / 3, "gemini-3.1-flash-lite"],
+  [2 / 3, "gemini-3.5-flash"],
+  [Infinity, "gemini-2.5-pro"],
 ];
 
-function effortTierLabel(dial) {
-  for (const [max, label] of EFFORT_TIER_LABELS) {
-    if (dial < max) return label;
+function effortTierModel(dial) {
+  for (const [max, model] of EFFORT_TIER_MODELS) {
+    if (dial < max) return model;
   }
-  return "Max Quality";
+  return "gemini-2.5-pro";
 }
 
 const inputRowsEl = document.getElementById("input-rows");
 const effortDialEl = document.getElementById("effort-dial");
-const effortDialLabelEl = document.getElementById("effort-dial-label");
+const effortDialModelEl = document.getElementById("effort-dial-model");
 const emitUiToggleEl = document.getElementById("emit-ui-toggle");
 const guessBtn = document.getElementById("guess-btn");
 const estimateBoxEl = document.getElementById("estimate-box");
@@ -51,9 +55,11 @@ for (let i = 0; i < NUM_INPUT_ROWS; i++) {
   inputRowsEl.appendChild(row);
 }
 
-effortDialEl.addEventListener("input", () => {
-  effortDialLabelEl.textContent = effortTierLabel(parseFloat(effortDialEl.value));
-});
+function updateEffortDialModel() {
+  effortDialModelEl.textContent = effortTierModel(parseFloat(effortDialEl.value));
+}
+updateEffortDialModel();
+effortDialEl.addEventListener("input", updateEffortDialModel);
 
 // --- A2A client ---------------------------------------------------------
 let clientPromise = null;
