@@ -209,6 +209,14 @@ def determine_result(guess: str | None, captured: dict | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+# ADK's RunConfig.max_llm_calls defaults to 500 and is otherwise
+# unbounded -- see app/fast_api_app.py's identical cap on the live UI
+# path for the full writeup (a live GCP billing review traced
+# disproportionate spend here). Matters even more for a batch run: with
+# N rows, an uncapped per-row ceiling multiplies across the whole file.
+_MAX_LLM_CALLS_PER_TURN = 10
+
+
 async def _send(runner: Runner, session_id: str, text: str) -> tuple[str, list[dict]]:
     message = types.Content(role="user", parts=[types.Part.from_text(text=text)])
     texts: list[str] = []
@@ -217,7 +225,9 @@ async def _send(runner: Runner, session_id: str, text: str) -> tuple[str, list[d
         new_message=message,
         user_id="batch_process",
         session_id=session_id,
-        run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+        run_config=RunConfig(
+            streaming_mode=StreamingMode.SSE, max_llm_calls=_MAX_LLM_CALLS_PER_TURN
+        ),
     ):
         if not (event.content and event.content.parts):
             continue

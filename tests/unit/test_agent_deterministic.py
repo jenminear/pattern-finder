@@ -431,28 +431,37 @@ class TestWritePatternDescriptionPrompt:
         assert "The confirmed rule/logic: x2" in prompt
 
 
-class TestEffortTierThinkingConfig:
-    # Regression test for a real bug found live: gemini-2.5-pro (Max
-    # Quality's model) 400s on thinking_level entirely, and even on
-    # thinking_budget=0 (it can't disable thinking) -- confirmed against
-    # the real API, not assumed. Each tier must set EXACTLY ONE of
-    # thinking_budget/thinking_level, matching what its own model
-    # actually supports (gemini-2.5-pro: budget only; the gemini-3.x
-    # models used by the other two tiers accept both, confirmed live, but
-    # the project's convention is still one field per tier).
-    def test_each_tier_sets_exactly_one_thinking_field(self, agent_module):
+class TestEffortTierConfig:
+    # All three tiers now share one model (gemini-3.1-flash-lite) -- a
+    # live GCP billing review traced disproportionate spend to
+    # gemini-3.5-flash/gemini-2.5-pro combined with an uncapped
+    # max_llm_calls (see app/fast_api_app.py's cap and app/agent.py's
+    # _FLASH_LITE comment for the full writeup), not to per-call cost on
+    # the models themselves. thinking_budget values 0/8192/24576 were all
+    # confirmed live against the real API before this change, not assumed.
+    def test_all_tiers_share_the_same_model(self, agent_module):
+        models = {
+            t.model
+            for t in (
+                agent_module._ECONOMY,
+                agent_module._BALANCED,
+                agent_module._MAX_QUALITY,
+            )
+        }
+        assert models == {"gemini-3.1-flash-lite"}
+
+    def test_each_tier_uses_thinking_budget_not_level(self, agent_module):
         for tier in (
             agent_module._ECONOMY,
             agent_module._BALANCED,
             agent_module._MAX_QUALITY,
         ):
-            has_budget = tier.thinking_budget is not None
-            has_level = tier.thinking_level is not None
-            assert has_budget != has_level, f"{tier.name}: must set exactly one"
+            assert tier.thinking_level is None, f"{tier.name}: thinking_level should be unused"
+            assert tier.thinking_budget is not None, f"{tier.name}: thinking_budget must be set"
 
-    def test_max_quality_uses_budget_not_level(self, agent_module):
-        # The specific case that broke: gemini-2.5-pro rejects
-        # thinking_level outright.
-        assert agent_module._MAX_QUALITY.thinking_level is None
-        assert agent_module._MAX_QUALITY.thinking_budget is not None
-        assert agent_module._MAX_QUALITY.thinking_budget > 0  # 2.5-pro can't use 0 either
+    def test_thinking_budget_increases_with_tier(self, agent_module):
+        assert (
+            agent_module._ECONOMY.thinking_budget
+            < agent_module._BALANCED.thinking_budget
+            < agent_module._MAX_QUALITY.thinking_budget
+        )

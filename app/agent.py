@@ -134,9 +134,27 @@ class EffortTier:
     threshold: float
 
 
+_FLASH_LITE = "gemini-3.1-flash-lite"
+
+# All three tiers now share one model. gemini-3.5-flash and gemini-2.5-pro
+# were dropped after a live GCP billing review showed disproportionate
+# Vertex AI spend -- traced to two compounding factors, not the models
+# themselves being expensive per call: (1) ADK's RunConfig.max_llm_calls
+# defaults to 500 and was uncapped everywhere in this codebase, and (2)
+# pattern_search_agent runs as a nested AgentTool invocation with its OWN
+# separate 500-call budget, so a single "guess" that fell through to
+# freeform search had no practical ceiling on how many increasingly-large
+# (each call resends the whole growing context) LLM calls it could rack
+# up -- confirmed by the billing breakdown itself, where "Input Text
+# Caching"/"Text Input" tokens dwarfed "Thinking Output" tokens, the
+# signature of many iterations re-sending a growing prompt rather than
+# expensive thinking. See _apply_max_llm_calls_cap below for the other
+# half of the fix. gemini-3.1-flash-lite's thinking_budget was verified
+# live across 0/8192/24576 before this change (Economy already proved 0
+# worked) -- see project history.
 _ECONOMY = EffortTier(
     name="Economy",
-    model="gemini-3.1-flash-lite",
+    model=_FLASH_LITE,
     thinking_budget=0,
     thinking_level=None,
     search_persistence=(
@@ -147,9 +165,9 @@ _ECONOMY = EffortTier(
 )
 _BALANCED = EffortTier(
     name="Balanced",
-    model="gemini-3.5-flash",
-    thinking_budget=None,
-    thinking_level="LOW",
+    model=_FLASH_LITE,
+    thinking_budget=8192,
+    thinking_level=None,
     search_persistence=(
         "Try a small number of freeform alternative approaches before "
         "giving up."
@@ -158,14 +176,8 @@ _BALANCED = EffortTier(
 )
 _MAX_QUALITY = EffortTier(
     name="Max Quality",
-    # gemini-2.5-pro (unlike the 3.x models used by the other two tiers)
-    # only supports the older thinking_budget field, not thinking_level --
-    # confirmed live (it 400s on thinking_level, and even on
-    # thinking_budget=0, since 2.5-pro can't disable thinking entirely).
-    # 32768 is that model's max budget, the closest explicit equivalent to
-    # "HIGH".
-    model="gemini-2.5-pro",
-    thinking_budget=32768,
+    model=_FLASH_LITE,
+    thinking_budget=24576,
     thinking_level=None,
     search_persistence=(
         "Thoroughly explore freeform alternative approaches and extra "

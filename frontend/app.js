@@ -12,21 +12,17 @@ const NUM_INPUT_ROWS = 5;
 // A2AClient.fromCardUrl() with the exact, known-correct card URL instead.
 const AGENT_CARD_URL = `${window.location.origin}/a2a/pattern-finder/.well-known/agent-card.json`;
 
-// Mirrors app/agent.py's _ECONOMY/_BALANCED/_MAX_QUALITY tier boundaries and
-// model IDs -- display-only (the actual tier is resolved server-side from
-// the raw EFFORT_DIAL value), but must be kept in sync by hand if those
-// model IDs ever change.
-const EFFORT_TIER_MODELS = [
-  [1 / 3, "gemini-3.1-flash-lite"],
-  [2 / 3, "gemini-3.5-flash"],
-  [Infinity, "gemini-2.5-pro"],
-];
+// Mirrors app/agent.py's _ECONOMY/_BALANCED/_MAX_QUALITY tiers -- all three
+// now share one model (gemini-3.5-flash and gemini-2.5-pro were dropped
+// after a billing review; see app/agent.py's effort-tier comment), so this
+// is a flat constant rather than a dial-position lookup. Kept as a
+// function/named constant (not inlined) so a future re-introduction of
+// per-tier models only needs to change this one spot -- must still be kept
+// in sync by hand with app/agent.py's _FLASH_LITE.
+const EFFORT_TIER_MODEL = "gemini-3.1-flash-lite";
 
-function effortTierModel(dial) {
-  for (const [max, model] of EFFORT_TIER_MODELS) {
-    if (dial < max) return model;
-  }
-  return "gemini-2.5-pro";
+function effortTierModel(_dial) {
+  return EFFORT_TIER_MODEL;
 }
 
 const inputRowsEl = document.getElementById("input-rows");

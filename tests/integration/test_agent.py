@@ -64,6 +64,12 @@ def isolated_db():
     yield
 
 
+# ADK's RunConfig.max_llm_calls defaults to 500 and is otherwise
+# unbounded -- see app/fast_api_app.py's identical cap on the live UI
+# path (a live GCP billing review traced disproportionate spend to this).
+_MAX_LLM_CALLS_PER_TURN = 10
+
+
 async def _send(runner: Runner, session_id: str, text: str) -> tuple[str, list[dict]]:
     """Sends one turn, returns (accumulated text, A2UI DataPart payloads)."""
     message = types.Content(role="user", parts=[types.Part.from_text(text=text)])
@@ -73,7 +79,9 @@ async def _send(runner: Runner, session_id: str, text: str) -> tuple[str, list[d
         new_message=message,
         user_id="test_user",
         session_id=session_id,
-        run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+        run_config=RunConfig(
+            streaming_mode=StreamingMode.SSE, max_llm_calls=_MAX_LLM_CALLS_PER_TURN
+        ),
     ):
         if not (event.content and event.content.parts):
             continue

@@ -27,7 +27,13 @@ from a2a.utils.constants import (
 )
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
+from google.adk.a2a.converters.request_converter import (
+    convert_a2a_request_to_agent_run_request,
+)
+from google.adk.a2a.executor.a2a_agent_executor import (
+    A2aAgentExecutor,
+    A2aAgentExecutorConfig,
+)
 from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
 from google.adk.artifacts import GcsArtifactService, InMemoryArtifactService
 from google.adk.runners import Runner
@@ -57,8 +63,32 @@ runner = Runner(
     session_service=InMemorySessionService(),
 )
 
+# ADK's RunConfig.max_llm_calls defaults to 500 and is otherwise
+# unbounded here -- a live GCP billing review traced disproportionate
+# Vertex AI spend to exactly this: a single "guess" that falls through to
+# freeform pattern-search can loop through root_agent's own tool calls
+# AND pattern_search_agent's independently-budgeted nested AgentTool
+# invocation (itself up to 500 more calls), each iteration resending the
+# whole growing context. Wrapping the default request_converter is the
+# only hook A2aAgentExecutorConfig exposes for capping this on every
+# incoming request -- see app/agent.py's effort-tier comment for the
+# full writeup.
+_MAX_LLM_CALLS_PER_INVOCATION = 10
+
+
+def _capped_request_converter(request, part_converter):
+    run_request = convert_a2a_request_to_agent_run_request(request, part_converter)
+    if run_request.run_config is not None:
+        run_request.run_config.max_llm_calls = _MAX_LLM_CALLS_PER_INVOCATION
+    return run_request
+
+
 request_handler = DefaultRequestHandler(
-    agent_executor=A2aAgentExecutor(runner=runner), task_store=InMemoryTaskStore()
+    agent_executor=A2aAgentExecutor(
+        runner=runner,
+        config=A2aAgentExecutorConfig(request_converter=_capped_request_converter),
+    ),
+    task_store=InMemoryTaskStore(),
 )
 
 A2A_RPC_PATH = f"/a2a/{adk_app.name}"
