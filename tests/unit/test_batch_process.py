@@ -14,12 +14,50 @@
 """Unit tests for scripts/batch_process.py's pure helpers -- no agent or
 session dependency, so these run fast with no network/LLM calls. The
 full pipeline (real agent, real spreadsheet I/O) is covered by
-tests/integration/test_batch_process.py instead.
+tests/integration/test_batch_process_e2e.py instead.
 """
 
 import inspect
+import re
+from datetime import datetime
+from pathlib import Path
 
 import scripts.batch_process as bp
+
+
+class TestDefaultOutputPath:
+    # A bare "_processed.xlsx" name got silently overwritten by each
+    # successive run, losing the previous results -- the default output
+    # path now includes a datetime stamp.
+    def test_includes_processed_and_timestamp(self):
+        result = bp._default_output_path(Path("scenarios.xlsx"))
+        assert re.fullmatch(r"scenarios_processed_\d{8}_\d{6}\.xlsx", result.name)
+
+    def test_preserves_parent_directory_and_suffix(self, tmp_path):
+        input_path = tmp_path / "data.xlsx"
+        result = bp._default_output_path(input_path)
+        assert result.parent == tmp_path
+        assert result.suffix == ".xlsx"
+
+    def test_successive_calls_do_not_collide(self, monkeypatch):
+        # Not a guarantee for calls in the exact same second (this is a
+        # CLI tool run by a human, not a tight loop), but two calls a
+        # second apart -- the realistic "ran it again" case -- must differ.
+        # Monkeypatches bp.datetime itself (a fresh name bound by
+        # batch_process.py's `from datetime import datetime`) rather than
+        # sleeping for real, since datetime.now is a builtin classmethod
+        # on an immutable type and can't be patched directly.
+        moments = iter([datetime(2026, 1, 1, 12, 0, 0), datetime(2026, 1, 1, 12, 0, 1)])
+
+        class _FakeDatetime:
+            @staticmethod
+            def now():
+                return next(moments)
+
+        monkeypatch.setattr(bp, "datetime", _FakeDatetime)
+        first = bp._default_output_path(Path("scenarios.xlsx"))
+        second = bp._default_output_path(Path("scenarios.xlsx"))
+        assert first != second
 
 
 class TestConsequenceIsolation:

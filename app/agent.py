@@ -546,7 +546,15 @@ async def _narrow_llm_call(prompt: str, model: str) -> str:
 async def _consequence_matches(guess: str | None, correct: str, model: str) -> bool:
     """Section VI step 7's comparison. Deterministic whenever the correct
     consequence is purely numeric (per user direction); a narrow LLM call
-    only for non-numeric consequences that aren't an exact string match."""
+    only for non-numeric consequences that aren't an exact string match.
+
+    Numeric comparison rounds both values to 2 decimal places rather than
+    using a tight epsilon -- live testing showed the previous 1e-6
+    tolerance flagging results as "Incorrect" purely from ordinary
+    floating-point/division noise several decimal places out, not a
+    genuine miss. Rounding to 2dp before comparing is the actual
+    intended precision for "did the agent guess correctly."
+    """
     guess_norm = (guess or "").strip().lower()
     if not guess_norm or "don't know" in guess_norm or "dont know" in guess_norm:
         return False
@@ -554,7 +562,9 @@ async def _consequence_matches(guess: str | None, correct: str, model: str) -> b
     numeric_correct = _try_float(correct.strip())
     if numeric_correct is not None:
         numeric_guess = _try_float(guess_norm)
-        return numeric_guess is not None and abs(numeric_guess - numeric_correct) < 1e-6
+        return numeric_guess is not None and round(numeric_guess, 2) == round(
+            numeric_correct, 2
+        )
 
     if guess_norm == correct.strip().lower():
         return True

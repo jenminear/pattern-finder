@@ -30,10 +30,14 @@ NOT reach the Guess-phase turn -- build_guess_message()'s signature has
 no parameter for it at all, and process_row() only reads the row's
 Consequence value (passed in by the caller) after the guess call has
 already returned. See tests/unit/test_batch_process.py and
-tests/integration/test_batch_process.py.
+tests/integration/test_batch_process_e2e.py.
 
 Usage:
     uv run python scripts/batch_process.py input.xlsx [output.xlsx]
+
+If output.xlsx is omitted, it defaults to
+<input stem>_processed_<YYYYMMDD_HHMMSS>.xlsx next to the input file, so
+successive runs don't silently overwrite each other's results.
 
 Expected columns (any order; case-sensitive, exact text):
     label 1..label 5, value 1..value 5, Slider value, Consequence
@@ -47,6 +51,7 @@ slider_value_to_effort_dial().
 import argparse
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 
 import openpyxl
@@ -357,6 +362,14 @@ async def process_workbook(input_path: Path, output_path: Path) -> None:
     print(f"\nProcessed {processed} row(s). Wrote {output_path}")
 
 
+def _default_output_path(input_path: Path) -> Path:
+    """<stem>_processed_<YYYYMMDD_HHMMSS><suffix> next to the input file --
+    a bare "_processed" name would get silently overwritten by the next
+    run, losing the previous results."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return input_path.with_name(f"{input_path.stem}_processed_{timestamp}{input_path.suffix}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="Input .xlsx file")
@@ -365,13 +378,11 @@ def main() -> None:
         type=Path,
         nargs="?",
         default=None,
-        help="Output .xlsx file (default: <input>_processed.xlsx)",
+        help="Output .xlsx file (default: <input>_processed_<timestamp>.xlsx)",
     )
     args = parser.parse_args()
 
-    output = args.output or args.input.with_name(
-        f"{args.input.stem}_processed{args.input.suffix}"
-    )
+    output = args.output if args.output is not None else _default_output_path(args.input)
     asyncio.run(process_workbook(args.input, output))
 
 

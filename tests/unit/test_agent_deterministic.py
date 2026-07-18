@@ -465,3 +465,43 @@ class TestEffortTierConfig:
             < agent_module._BALANCED.thinking_budget
             < agent_module._MAX_QUALITY.thinking_budget
         )
+
+
+class TestConsequenceMatchesNumericRounding:
+    # Regression coverage for a real issue found in live testing: numeric
+    # correctness was being judged with a 1e-6 tolerance, so ordinary
+    # floating-point/division noise several decimal places out (not a
+    # genuine miss) was labeled "Incorrect". Comparison now rounds both
+    # values to 2 decimal places -- these tests never reach the model
+    # param (numeric path is fully deterministic), so a placeholder
+    # string is fine there.
+    @pytest.mark.asyncio
+    async def test_exact_integer_match(self, agent_module):
+        assert await agent_module._consequence_matches("30", "30", "unused") is True
+
+    @pytest.mark.asyncio
+    async def test_noise_past_two_decimals_still_matches(self, agent_module):
+        assert (
+            await agent_module._consequence_matches("3.333333333", "3.33", "unused") is True
+        )
+        assert (
+            await agent_module._consequence_matches("12.129999999", "12.13", "unused") is True
+        )
+
+    @pytest.mark.asyncio
+    async def test_genuine_miss_at_two_decimals_does_not_match(self, agent_module):
+        assert await agent_module._consequence_matches("3.34", "3.33", "unused") is False
+
+    @pytest.mark.asyncio
+    async def test_rounding_is_symmetric_on_the_correct_value_too(self, agent_module):
+        # The correct_consequence side gets rounded too, not just the guess.
+        assert await agent_module._consequence_matches("3.33", "3.334", "unused") is True
+        assert await agent_module._consequence_matches("3.33", "3.336", "unused") is False
+
+    @pytest.mark.asyncio
+    async def test_dont_know_never_matches_regardless_of_closeness(self, agent_module):
+        assert await agent_module._consequence_matches("I don't know", "3.33", "unused") is False
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_guess_against_numeric_correct_does_not_match(self, agent_module):
+        assert await agent_module._consequence_matches("banana", "3.33", "unused") is False
