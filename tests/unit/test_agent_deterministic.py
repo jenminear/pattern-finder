@@ -505,3 +505,26 @@ class TestConsequenceMatchesNumericRounding:
     @pytest.mark.asyncio
     async def test_non_numeric_guess_against_numeric_correct_does_not_match(self, agent_module):
         assert await agent_module._consequence_matches("banana", "3.33", "unused") is False
+
+
+class TestPatternSearchCandidateLogging:
+    # pattern_search_agent gets its own narrow McpToolset (only
+    # log_candidate_technique) rather than the full db_mcp_toolset
+    # root_agent uses -- it has no business calling insert_scenario/
+    # upsert_pattern/etc. directly. This is a structural check, not a live
+    # MCP call: confirms the wiring is scoped correctly without needing a
+    # running MCP subprocess.
+    def test_pattern_search_agent_only_has_the_logging_tool(self, agent_module):
+        assert agent_module.pattern_search_mcp_toolset in agent_module.pattern_search_agent.tools
+        assert agent_module.pattern_search_mcp_toolset.tool_filter == ["log_candidate_technique"]
+
+    def test_root_agent_keeps_the_full_toolset(self, agent_module):
+        assert agent_module.db_mcp_toolset in agent_module.root_agent.tools
+        # root_agent must NOT also be handed the narrow toolset -- it
+        # already has everything via db_mcp_toolset, and giving it both
+        # would just be redundant.
+        assert agent_module.pattern_search_mcp_toolset not in agent_module.root_agent.tools
+
+    def test_instruction_tells_it_to_log_even_low_confidence_finds(self, agent_module):
+        assert "log_candidate_technique" in agent_module._PATTERN_SEARCH_INSTRUCTION
+        assert "free parameters" in agent_module._PATTERN_SEARCH_INSTRUCTION

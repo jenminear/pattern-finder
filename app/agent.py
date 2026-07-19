@@ -780,23 +780,28 @@ async def _guess_phase_content(
     script_summary = _script_summary_text(found)
     history_text = _format_history_for_prompt(scenarios, sorted_names)
     mapping = ", ".join(f"x{i}={name}" for i, name in enumerate(sorted_names))
+    label_names_csv = ", ".join(sorted_names)
     handoff = (
         f"Why you were invoked: no exact pattern exists, and the seeded "
         f"script (run deterministically, before you were invoked) found: "
         f"{script_summary}\nHistorical scenarios sharing this label set:\n"
         f"{history_text}\nCall the pattern_search tool, including this "
         f"history and the script's result in your request to it (it "
-        f"already knows not to re-run the script). If it returns a "
-        f"candidate with strong confidence, apply it and report your "
-        f"guess. If you or pattern_search report a computable rule, write "
-        f"it using x0, x1, x2, ... where those always refer to this label "
-        f"set's labels sorted in ascending order -- {mapping} -- so the rule "
-        f"stays reusable regardless of what order a future request lists "
-        f"these labels in. If not, call get_all_pattern_descriptions and "
-        f"check whether this scenario's values plausibly match any "
-        f"EXISTING pattern's abstracted description -- independent of "
-        f"labels. If nothing clears your confidence bar, say plainly that "
-        f"you don't know rather than guessing."
+        f"already knows not to re-run the script). Also include this exact "
+        f"line verbatim in your request to it: \"LABEL_NAMES: "
+        f"{label_names_csv}\" -- it needs this to log discoveries "
+        f"accurately, and cannot reliably reconstruct it from anything "
+        f"else in your request. If it returns a candidate with strong "
+        f"confidence, apply it and report your guess. If you or "
+        f"pattern_search report a computable rule, write it using x0, x1, "
+        f"x2, ... where those always refer to this label set's labels "
+        f"sorted in ascending order -- {mapping} -- so the rule stays "
+        f"reusable regardless of what order a future request lists these "
+        f"labels in. If not, call get_all_pattern_descriptions and check "
+        f"whether this scenario's values plausibly match any EXISTING "
+        f"pattern's abstracted description -- independent of labels. If "
+        f"nothing clears your confidence bar, say plainly that you don't "
+        f"know rather than guessing."
     )
     return None, handoff
 
@@ -901,6 +906,7 @@ async def _attempt_pattern_revision(
     script_summary = _script_summary_text(found)
     history_text = _format_history_for_prompt(scenarios, label_names)
     mapping = ", ".join(f"x{i}={name}" for i, name in enumerate(label_names))
+    label_names_csv = ", ".join(label_names)
     handoff = (
         f"Why you were invoked: pattern_id={pattern_id}'s existing rule "
         f"({old_rule!r}) just predicted {wrong_guess!r} for a new "
@@ -915,7 +921,11 @@ async def _attempt_pattern_revision(
         f"sandboxed reasoning to look for a DIFFERENT or more complex rule "
         f"that explains EVERY one of these examples, not just the ones the "
         f"old rule happened to fit -- the old rule may have been an "
-        f"overly hasty conclusion from too few examples. If it uses x0, "
+        f"overly hasty conclusion from too few examples. If you call "
+        f"pattern_search, include this exact line verbatim in your request "
+        f"to it: \"LABEL_NAMES: {label_names_csv}\" -- it needs this to log "
+        f"discoveries accurately, and cannot reliably reconstruct it from "
+        f"anything else in your request. If it uses x0, "
         f"x1, x2, ..., those always refer to this label set's labels "
         f"sorted in ascending order -- {mapping}. If you find a rule that "
         f"fits ALL examples with strong confidence, call upsert_pattern "
@@ -1060,6 +1070,18 @@ qualitative scales, or other structures entirely) and test them using your
 sandboxed code execution -- to the extent your current search-persistence
 setting allows: {temp:effort_dial_description}
 
+Statistical hygiene, regardless of what kind of model you're fitting: a
+model with more free parameters than you have independent examples to
+constrain them will ALWAYS achieve a "perfect" fit -- that is not evidence
+it is correct, it is evidence you don't have enough data to know. Before
+reporting high confidence in an exact fit, check whether you actually have
+at least as many examples as your candidate model has free parameters
+(e.g. a degree-2 polynomial in N inputs has 1 + N + N*(N+1)/2 coefficients
+-- count them). If you don't, either gather more evidence from the data
+you have, or prefer the SIMPLEST model that still fits exactly over any
+model that merely fits -- simplicity here means fewest free parameters,
+not any assumption about what shape the answer takes.
+
 Report back:
 - Whether you found a candidate rule, and if so, its exact formula/logic. If
   it's a computable expression, write it using x0, x1, x2, ... for the
@@ -1073,10 +1095,44 @@ Report back:
   directive instead.
 - Your confidence (0-1) and why.
 - A short trace of what you tried, in order.
-- Since this is by definition a new approach the seeded script doesn't
-  cover, note that a developer should consider folding it into the script
-  (Section VII) -- this build does not auto-edit the script file.
+
+Separately, whenever you found ANY candidate rule during your search --
+even one you weren't confident enough to report as your final answer --
+call log_candidate_technique with it (rule, confidence, trace, and why
+you were searching) as one of your actions before finishing. This is not
+the same as reporting your answer above: it's a durable log a developer
+reviews later to decide whether anything you found is a genuinely new,
+general technique worth folding into the seeded script (Section VII) --
+this build does not auto-edit the script file, so this log is how that
+happens instead of it being lost once your turn ends.
+
+For log_candidate_technique's label_names argument specifically: your
+request includes a line reading exactly "LABEL_NAMES: <names>" -- copy
+that value verbatim, do not reconstruct or paraphrase it from anything
+else in your request (label names mentioned elsewhere, x0/x1/... indices,
+etc. are NOT reliable substitutes). If your request does NOT contain a
+LABEL_NAMES line, do not call log_candidate_technique at all -- guessing
+at label names would make the log actively misleading, which is worse
+than not logging that turn.
 """
+
+# Scoped to exactly one tool -- pattern_search_agent has no business
+# calling insert_scenario/upsert_pattern/etc. (that's root_agent's and the
+# deterministic layer's job), so it gets its own narrow McpToolset rather
+# than the full db_mcp_toolset below. Same MCP server, same DB, just a
+# separate stdio connection (tool_filter is McpToolset's own mechanism for
+# this, not a second server).
+pattern_search_mcp_toolset = McpToolset(
+    connection_params=StdioConnectionParams(
+        server_params=StdioServerParameters(
+            command="uv",
+            args=["run", "python", "-m", "app.mcp_server.server"],
+            cwd=str(_PROJECT_ROOT),
+            env=dict(os.environ),  # see db_mcp_toolset below for why
+        ),
+    ),
+    tool_filter=["log_candidate_technique"],
+)
 
 pattern_search_agent = Agent(
     name="pattern_search",
@@ -1087,6 +1143,7 @@ pattern_search_agent = Agent(
         "after the seeded script has already been tried deterministically "
         "and found nothing confident."
     ),
+    tools=[pattern_search_mcp_toolset],
     # Model-internal sandbox: no separate cloud resource to provision, no
     # network call at import time (unlike VertexAiCodeExecutor, which
     # creates/loads a Vertex AI Extension resource on construction -- see

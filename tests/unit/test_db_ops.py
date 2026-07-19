@@ -125,3 +125,54 @@ def test_link_pattern_to_scenarios_requires_label_names_when_updating_label_set(
     pid = db_ops.upsert_pattern("desc", "rule")
     with pytest.raises(ValueError):
         db_ops.link_pattern_to_scenarios(pid, [], update_label_set=True, label_names=None)
+
+
+def test_log_candidate_technique_records_full_row():
+    from sqlalchemy import select
+
+    from app.db.engine import get_engine
+    from app.db.models import candidate_techniques
+
+    candidate_id = db_ops.log_candidate_technique(
+        label_names="a, b, c",
+        rule="x0**2 + 6*x1 + 9*x2",
+        confidence=0.95,
+        trace="tried a quadratic regression, R^2 = 1.0",
+        source="fresh discovery",
+    )
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(candidate_techniques).where(
+                candidate_techniques.c.candidate_id == candidate_id
+            )
+        ).one()
+
+    assert row.label_names == "a, b, c"
+    assert row.rule == "x0**2 + 6*x1 + 9*x2"
+    assert row.confidence == 0.95
+    assert row.trace == "tried a quadratic regression, R^2 = 1.0"
+    assert row.source == "fresh discovery"
+    assert row.created_at is not None
+
+
+def test_log_candidate_technique_optional_fields_default_none():
+    candidate_id = db_ops.log_candidate_technique(label_names="x", rule="x0")
+
+    from sqlalchemy import select
+
+    from app.db.engine import get_engine
+    from app.db.models import candidate_techniques
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(candidate_techniques).where(
+                candidate_techniques.c.candidate_id == candidate_id
+            )
+        ).one()
+
+    assert row.confidence is None
+    assert row.trace is None
+    assert row.source is None

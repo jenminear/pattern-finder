@@ -17,6 +17,7 @@ from __future__ import annotations
 from sqlalchemy import Engine, Table, insert, select, update
 
 from app.db.engine import get_engine
+from app.db.models import candidate_techniques as candidate_techniques_t
 from app.db.models import labels as labels_t
 from app.db.models import pattern_labels as pattern_labels_t
 from app.db.models import patterns as patterns_t
@@ -275,3 +276,30 @@ def link_pattern_to_scenarios(
             ]
             if new_rows:
                 conn.execute(insert(pattern_labels_t), new_rows)
+
+
+def log_candidate_technique(
+    label_names: str,
+    rule: str,
+    confidence: float | None = None,
+    trace: str | None = None,
+    source: str | None = None,
+) -> int:
+    """Records a technique pattern_search's freeform reasoning discovered
+    that the seeded script didn't already cover -- see candidate_techniques'
+    table comment in app/db/models.py. Purely a log: never read by any
+    deterministic code path, only by a developer reviewing the table
+    directly.
+    """
+    engine = get_engine()
+    with engine.begin() as conn:
+        result = conn.execute(
+            insert(candidate_techniques_t).values(
+                label_names=label_names,
+                rule=rule,
+                confidence=confidence,
+                trace=trace,
+                source=source,
+            )
+        )
+        return result.inserted_primary_key[0]

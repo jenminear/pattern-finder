@@ -8,8 +8,12 @@ both SQLite (local dev, see app/db/engine.py) and Cloud SQL Postgres
 dialect-specific schema files to keep in sync.
 """
 
+from datetime import UTC, datetime
+
 from sqlalchemy import (
     Column,
+    DateTime,
+    Float,
     ForeignKey,
     Integer,
     MetaData,
@@ -86,4 +90,33 @@ pattern_labels = Table(
     Column(
         "label_id", Integer, ForeignKey("labels.label_id"), primary_key=True
     ),
+)
+
+# A durable, human-reviewable log of what pattern_search's freeform
+# reasoning discovered that the seeded script (pattern_search_script.py)
+# didn't already cover -- Section VII's self-improvement loop is not
+# automated in this build (see that module's docstring), so this table is
+# the visibility mechanism instead: a developer periodically reviews it
+# and decides by hand whether anything here is a genuinely new, general
+# technique worth folding into the script, same as any code review.
+candidate_techniques = Table(
+    "candidate_techniques",
+    metadata,
+    Column("candidate_id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "created_at",
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    ),
+    # Comma-separated, e.g. "a, b, c" -- a readable log for a developer to
+    # skim, not something the app queries by label set, so this is
+    # deliberately denormalized rather than going through `labels`.
+    Column("label_names", Text, nullable=False),
+    Column("rule", Text, nullable=False),
+    Column("confidence", Float, nullable=True),
+    Column("trace", Text, nullable=True),
+    # Free text, not an enum -- e.g. "fresh discovery, no exact pattern
+    # existed" vs "pattern revision, an existing rule was proven wrong".
+    Column("source", Text, nullable=True),
 )

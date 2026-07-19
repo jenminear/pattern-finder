@@ -59,3 +59,4 @@ Ask the user: Option A (simple single-project) or Option B (full CI/CD pipeline 
 - **Run Python with `uv`**: `uv run python script.py`. Run `agents-cli install` first.
 - **Stop on repeated errors**: If the same error appears 3+ times, fix the root cause instead of retrying.
 - **Terraform conflicts** (Error 409): Use `terraform import` instead of retrying creation.
+- **Never delete or recreate the local dev DB (`pattern_finder_local.db`) directly** (e.g. `rm` + let it auto-recreate). Always go through `uv run python scripts/reset_db.py` instead -- it backs up (dated filename, never overwrites a prior backup) before clearing every table. This applies to any action that would wipe or reset the DB's contents, not just literal deletion.

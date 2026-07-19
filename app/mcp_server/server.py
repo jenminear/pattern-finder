@@ -125,5 +125,36 @@ def link_pattern_to_scenarios(
     )
 
 
+@mcp.tool
+def log_candidate_technique(
+    label_names: str,
+    rule: str,
+    confidence: float | None = None,
+    trace: str | None = None,
+    source: str | None = None,
+) -> int:
+    """Record a candidate rule/technique your freeform search discovered,
+    for a developer to review later -- not the same as reporting your
+    answer for this turn. Call this whenever you found a candidate rule,
+    even one you weren't confident enough to actually use.
+
+    Args:
+        label_names: Copy this VERBATIM from the "LABEL_NAMES: ..." line in
+            your request -- do not reconstruct or paraphrase it from
+            anything else (x0/x1/... indices are not a reliable source).
+            If your request has no such line, do not call this tool.
+        rule: The candidate rule/logic you found, in the same form you'd
+            report it (x0/x1/... convention if it's a computable expression).
+        confidence: Your confidence in it (0-1), if you had one.
+        trace: A short trace of how you found it.
+        source: Why you were searching -- e.g. "fresh discovery" or
+            "pattern revision after a wrong guess".
+
+    Returns:
+        The new candidate_id.
+    """
+    return db_ops.log_candidate_technique(label_names, rule, confidence, trace, source)
+
+
 if __name__ == "__main__":
     mcp.run()
