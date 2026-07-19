@@ -187,6 +187,7 @@ Thumbs.db
 
 # Local dev DB (SQLite stand-in for Cloud SQL Postgres)
 pattern_finder_local.db
+pattern_finder_local_backup_*.db
 
 # Generated eval traces/grade results (regenerate via
 # tests/eval/generate_traces_local.py + agents-cli eval grade)
